@@ -1,0 +1,20 @@
+profile_name: server_qwen_voicegenerator
+
+# 服务器部署的 Qwen VoiceGenerator / VoiceDesign 配置。
+# 蓝区和服务器共用 src_next/voicebank/qwen_voicegenerator.py adapter；
+# 本文件只保存服务器环境的具体路径，不写进 adapter 代码。
+
+voicebank:
+  backend: qwen_voicegenerator
+  generator_root: "TODO: 填写服务器 voicegenerator 根目录"
+  script_path: "TODO: 填写服务器 voicegenerator 运行脚本路径"
+  model_path: "TODO: 填写服务器模型权重路径"
+  preset_path: "TODO: 如有 preset.json，在这里填写"
+  python_executable: "TODO: 如需指定 venv/conda python，在这里填写"
+  output_subdir: "voicebank"
+  # extra_args:
+  #   some_flag: value
+
+notes:
+  - "蓝区和服务器路径不同，但 adapter 文件相同。"
+  - "切换环境时只换 profile，不改 qwen_voicegenerator.py。"

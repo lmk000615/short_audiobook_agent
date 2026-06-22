@@ -1,0 +1,50 @@
+profile_name: blue_qwen_voicegenerator
+
+# 蓝区本地部署的 Qwen3-TTS VoiceDesign 配置。
+# 蓝区和服务器共用 src_next/voicebank/qwen_voicegenerator.py adapter；
+# 本文件只保存蓝区环境的具体路径，不写进 adapter 代码。
+#
+# 关键约束：
+#   - 蓝区 venv 是 WSL 创建的（pyvenv.cfg: executable=/usr/bin/python3），
+#     因此 python_executable 必须走 ["wsl", ".../bin/python"] 形式。
+#   - yaml 中所有路径用 Windows 风格（F:/...）；adapter 检测到 wsl 后会
+#     自动把传给 subprocess 的路径转成 /mnt/f/... 形式。
+#   - script_path 指向 src_next 自己维护的 wrapper（不依赖 flash-attn），
+#     不再指向外部 F:/akoasm/TTS-test/pipeline/run_voicedesign.py。
+
+voicebank:
+  backend: qwen_voicegenerator
+
+  # voicegenerator 项目根目录（用项目内的 src_next/voicebank/scripts/）
+  generator_root: "F:/akoasm/short_audiobook_agent/src_next/voicebank/scripts"
+
+  # 入口脚本（src_next 自己维护的 wrapper，默认 sdpa attn）
+  script_path: "run_voicedesign_srcnext.py"
+
+  # 模型权重目录（Qwen3-TTS-12Hz-1.7B-VoiceDesign）
+  model_path: "F:/akoasm/TTS-test/models/qwen3-tts-voicedesign"
+
+  # preset.json 当前 voicedesign 脚本不消费，留空
+  preset_path: ""
+
+  # WSL venv 中的 python；list 形式让 adapter 识别为 wrapper 调用
+  python_executable:
+    - "wsl"
+    - "/mnt/f/akoasm/TTS-test/envs/qwen3-customvoice/bin/python"
+
+  output_subdir: "voicebank"
+
+  # 透传给脚本的 CLI 参数 + adapter 行为参数
+  extra_args:
+    language: "Chinese"
+    device: "cuda:0"
+    attn_implementation: "sdpa"  # 默认走 PyTorch 原生 SDPA，不依赖 flash-attn
+    reference_text: "你好，欢迎使用语音设计功能，这是一个测试句子。"
+    timeout_per_char: 300
+
+notes:
+  - "蓝区和服务器共用 qwen_voicegenerator.py adapter。"
+  - "本文件只保存蓝区环境的具体路径。"
+  - "切换环境时只换 profile，不改 qwen_voicegenerator.py。"
+  - "venv 是 WSL 创建的；python_executable 走 wsl 包装调用。"
+  - "script_path 指向 src_next 自己的 wrapper，避免外部脚本强依赖 flash-attn。"
