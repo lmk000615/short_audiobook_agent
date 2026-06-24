@@ -21,15 +21,14 @@ description: |
   + IndexTTS-2 HTTP tts。所有模型都通过内网 HTTP API 调用。
 
 # ── llm：黄区 Gemma4 ───────────────────────────────────────────────
-# 内网直连，不需要 API key；黄区内网不走代理（bypass_proxy=false 才是字面意思
-# 的"不绕过代理"，等价于 requests 用系统默认代理；如果开发机配了代理反而要
-# 改成 true。本配置按 usage_guide 和实际部署写 false）。
+# 内网直连，不需要 API key；黄区开发机通常配置全局代理，必须bypass_proxy: true
+#才能直连内网服务器（不走代理）
 llm:
   backend: gemma4_http
   base_url: "http://10.50.121.123:8000/v1/chat/completions"
   model: "gemma-4-26B-A4B"
   timeout: 300
-  bypass_proxy: false
+  bypass_proxy: true
 
 # ── voicebank：Qwen3-TTS VoiceDesign HTTP ──────────────────────────
 # 服务地址参考 usage_guide_qwen3.md。
