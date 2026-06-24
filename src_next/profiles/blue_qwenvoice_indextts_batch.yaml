@@ -63,8 +63,10 @@ tts:
     invoke_mode: "batch"
 
 # ── output：完整 pipeline 默认输出根目录 ──────────────────────────────
+# 约定：<统一根>/<profile_name>/，不同 yaml 的产物在同一个 output-src-next/
+# 大文件夹下分目录存放，方便对比同一文本在不同后端组合下的效果。
 output:
-  root: "output-src-next-pipeline"
+  root: "output-src-next/blue_qwenvoice_indextts_batch"
 
 # ── pipeline：流程开关 ────────────────────────────────────────────────
 pipeline:

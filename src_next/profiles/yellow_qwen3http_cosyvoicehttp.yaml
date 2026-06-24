@@ -1,0 +1,98 @@
+# yellow_qwen3http_cosyvoicehttp.yaml
+#
+# 完整 pipeline profile（黄区）：
+#   region    = yellow
+#   voicebank = qwen3_http       (Qwen3-TTS VoiceDesign via HTTP)
+#   tts       = cosyvoice_http   (Fun-CosyVoice3-0.5B via HTTP, instruct 模式)
+#
+# 和 yellow_qwen3http_indexttshttp.yaml 的差异：
+#   * tts 后端换成 CosyVoice3，自然语言指令控制方言/语速/情绪；
+#   * 不走 IndexTTS 的 8 维 emotion_vector，TTSInstruction 的通用字段
+#     (emotion/tone/volume/pace/delivery_instruction) 由 adapter 拼成
+#     prompt_text，末尾加 <|endofprompt|> 分隔符。
+#
+# 黄区所有模型都通过内网 HTTP API 调用，不走 subprocess / WSL / 本地 venv。
+# 服务器地址参考项目根 usage_guide_*.md：
+#   Gemma4 LLM:        http://10.50.121.123:8000/v1/chat/completions
+#   Qwen3 VoiceDesign: http://10.50.121.102:8007
+#   CosyVoice3:        http://10.50.121.102:8005
+#
+# 5 个必填块：llm / voicebank / tts / output / pipeline
+
+name: yellow_qwen3http_cosyvoicehttp
+region: yellow
+description: |
+  黄区完整链路：Gemma4-26B-A4B LLM + Qwen3-TTS VoiceDesign HTTP voicebank
+  + Fun-CosyVoice3 HTTP tts（instruct 模式）。所有模型都通过内网 HTTP API 调用。
+
+# ── llm：黄区 Gemma4 ───────────────────────────────────────────────
+# 关键：bypass_proxy=true，黄区内网 10.50.121.123 必须绕过开发机全局代理，
+# 否则 requests 会走代理出去再绕回来，导致连接超时 / 404 / silent failure。
+# （yellow_qwen3http_indexttshttp.yaml 里写成 false 是早期配置遗留，本文件按
+# 实际部署的正确值写。）
+llm:
+  backend: gemma4_http
+  base_url: "http://10.50.121.123:8000/v1/chat/completions"
+  model: "gemma-4-26B-A4B"
+  timeout: 300
+  bypass_proxy: true
+
+# ── voicebank：Qwen3-TTS VoiceDesign HTTP ──────────────────────────
+# 服务地址参考 usage_guide_qwen3.md。
+voicebank:
+  backend: qwen3_http
+  base_url: "http://10.50.121.102:8007"
+  output_subdir: "voicebank"
+  extra_args:
+    language: "Chinese"
+    reference_text: "你好，欢迎使用语音设计功能，这是一个测试句子。"
+    # 单角色 voicedesign 请求超时（秒）
+    timeout_per_char: 60
+    # 并发线程数（角色通常 3-5 个，4 线程足够把总耗时压到接近单次请求）
+    max_workers: 4
+    # 黄区内网调用必须 bypass 开发机全局代理
+    bypass_proxy: true
+
+# ── tts：Fun-CosyVoice3 HTTP（instruct 模式）───────────────────────
+# 服务地址参考 usage_guide_cosyvoice.md。
+# instruct 模式要求 prompt_text 末尾加 <|endofprompt|> 分隔符，adapter
+# 自动处理；profile 只需要声明 mode=instruct 即可。
+#
+# 指令来源（adapter 内 _build_prompt_text 的优先级）：
+#   1. TTSInstruction.delivery_instruction（导演层给的具体朗读指导，最准）
+#   2. emotion + tone + volume + pace 拼自然语言（兜底）
+#   3. 都没有 → "用自然平和的语气说"
+tts:
+  backend: cosyvoice_http
+  base_url: "http://10.50.121.102:8005"
+  output_subdir: "audio_segments"
+  extra_args:
+    # instruct / cross_language / language_mapping 三选一；默认 instruct
+    mode: "instruct"
+    # 单段合成请求超时（秒）；CosyVoice3 比 IndexTTS 略慢，给 90s 余量
+    timeout_per_seg: 90
+    # 并发线程数（默认 4；段数多时增大可降 RTF）
+    max_workers: 4
+    bypass_proxy: true
+
+# ── output：黄区 pipeline 输出根目录 ───────────────────────────────
+# 约定：<统一根>/<profile_name>/，这样不同 yaml 的产物在同一个 output-src-next/
+# 大文件夹下分目录存放，方便对比同一文本在不同后端组合下的效果。
+output:
+  root: "output-src-next/yellow_qwen3http_cosyvoicehttp"
+
+# ── pipeline：流程开关 ─────────────────────────────────────────────
+pipeline:
+  save_intermediate_json: true
+  reuse_existing: false
+  stop_on_tts_error: false
+
+notes:
+  - "黄区所有模型走内网 HTTP，不走 subprocess / WSL / 本地 venv。"
+  - "Gemma4 / Qwen3 / CosyVoice 服务器地址见 usage_guide_*.md。"
+  - "黄区到蓝区切换只换 profile，不改 adapter / pipeline 代码。"
+  - "HTTP adapter 默认 bypass_proxy=true（黄区开发机有全局代理时强制无代理）。"
+  - "llm 块的 bypass_proxy=true 是必须的；写成 false 会让 requests 走系统代理，
+    黄区内网 IP 10.50.121.123 在代理外会直接超时。"
+  - "CosyVoice instruct 模式自动从 TTSInstruction.delivery_instruction 取指令；
+    导演层只要把具体朗读指导写进 delivery_instruction 就能被模型读到。"

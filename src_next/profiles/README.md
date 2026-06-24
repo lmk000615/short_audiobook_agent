@@ -58,6 +58,7 @@ python -m src_next.tts.test_tts_from_artifacts \
 |---|---|
 | `blue_qwenvoice_indextts_batch.yaml` | 蓝区 Qwen VoiceDesign voicebank + IndexTTS batch 合成 |
 | `yellow_qwen3http_indexttshttp.yaml` | 黄区 Gemma4 LLM + Qwen3 HTTP voicebank + IndexTTS HTTP tts |
+| `yellow_qwen3http_cosyvoicehttp.yaml` | 黄区 Gemma4 LLM + Qwen3 HTTP voicebank + CosyVoice3 HTTP tts（instruct 模式） |
 
 调用方式（未来 pipeline）：
 
@@ -138,12 +139,21 @@ tts:
   output_subdir: "audio_segments"
 
 output:
-  root: "output-src-next-pipeline"
+  root: "output-src-next/blue_qwenvoice_indextts_batch"
 
 pipeline:
   save_intermediate_json: true
   reuse_existing: false
   stop_on_tts_error: false
+```
+
+**输出目录约定**：所有完整 pipeline profile 的 `output.root` 统一写成 `output-src-next/<profile_name>` 格式。这样不同 yaml 的产物会落在同一个 `output-src-next/` 大文件夹下，按 profile 名分目录存放，方便横向对比（如蓝区 vs 黄区、IndexTTS vs CosyVoice 跑同一文本的产物差异）。最终目录结构示例：
+
+```
+output-src-next/
+├── blue_qwenvoice_indextts_batch/<story_name>/
+├── yellow_qwen3http_indexttshttp/<story_name>/
+└── yellow_qwen3http_cosyvoicehttp/<story_name>/
 ```
 
 ## 六、运行命令约定
@@ -160,7 +170,7 @@ python -m src_next.core.audiobook_pipeline \
 |---|---|---|
 | `--input` | ✅ | — |
 | `--profile` | ✅ | — |
-| `--output-root` | ❌ | profile 的 `output.root`（即 `output-src-next-pipeline`） |
+| `--output-root` | ❌ | profile 的 `output.root`（约定为 `output-src-next/<profile_name>`） |
 | `--story-name` | ❌ | input 文件名 stem（如 `sample_story_01`） |
 | `--mock` | ❌ | 走 `run_mock_core_pipeline`，忽略 `--profile` |
 | `--reuse-existing` | ❌ | 强制 `pipeline.reuse_existing=true`（覆盖 profile） |
