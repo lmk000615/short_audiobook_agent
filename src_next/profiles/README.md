@@ -47,9 +47,9 @@ python -m src_next.tts.test_tts_from_artifacts \
 
 | 字段 | 含义 |
 |---|---|
-| `region` | `blue`（蓝区）/ `server`（服务器）/ `mock`（离线） |
-| `voicebank` | `qwenvoice` / `cosyvoice` / `mockvoice` ... |
-| `tts` | `indextts` / `cosyvoice` / `fishpro` / `qwen_tts` / `mocktts` ... |
+| `region` | `blue`（蓝区本地 venv + subprocess）/ `yellow`（黄区内网 HTTP API）/ `server` / `mock` |
+| `voicebank` | `qwenvoice` / `qwen3http` / `cosyvoice` / `mockvoice` ... |
+| `tts` | `indextts` / `indexttshttp` / `cosyvoice` / `cosyvoicehttp` / `fishpro` / `qwen_tts` / `mocktts` ... |
 | `mode`（可选） | `batch` / `single` / `streaming`，不写表示默认 |
 
 **当前已有**：
@@ -57,6 +57,7 @@ python -m src_next.tts.test_tts_from_artifacts \
 | 文件 | 组合 |
 |---|---|
 | `blue_qwenvoice_indextts_batch.yaml` | 蓝区 Qwen VoiceDesign voicebank + IndexTTS batch 合成 |
+| `yellow_qwen3http_indexttshttp.yaml` | 黄区 Gemma4 LLM + Qwen3 HTTP voicebank + IndexTTS HTTP tts |
 
 调用方式（未来 pipeline）：
 

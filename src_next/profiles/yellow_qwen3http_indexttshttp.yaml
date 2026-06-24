@@ -1,0 +1,89 @@
+# yellow_qwen3http_indexttshttp.yaml
+#
+# 完整 pipeline profile（黄区）：
+#   region    = yellow
+#   voicebank = qwen3http    (Qwen3-TTS VoiceDesign via HTTP)
+#   tts       = indexttshttp (IndexTTS-2 via HTTP)
+#   mode      = （HTTP adapter 本身就是单请求模式，不区分 batch/single）
+#
+# 黄区所有模型都通过内网 HTTP API 调用，不走 subprocess / WSL / 本地 venv。
+# 服务器地址参考项目根 usage_guide_*.md：
+#   Gemma4 LLM:        http://10.50.121.123:8000/v1/chat/completions
+#   Qwen3 VoiceDesign: http://10.50.121.102:8007
+#   IndexTTS-2:        http://10.50.121.102:8009
+#
+# 5 个必填块：llm / voicebank / tts / output / pipeline
+
+name: yellow_qwen3http_indexttshttp
+region: yellow
+description: |
+  黄区完整链路：Gemma4-26B-A4B LLM + Qwen3-TTS VoiceDesign HTTP voicebank
+  + IndexTTS-2 HTTP tts。所有模型都通过内网 HTTP API 调用。
+
+# ── llm：黄区 Gemma4 ───────────────────────────────────────────────
+# 内网直连，不需要 API key；黄区内网不走代理（bypass_proxy=false 才是字面意思
+# 的"不绕过代理"，等价于 requests 用系统默认代理；如果开发机配了代理反而要
+# 改成 true。本配置按 usage_guide 和实际部署写 false）。
+llm:
+  backend: gemma4_http
+  base_url: "http://10.50.121.123:8000/v1/chat/completions"
+  model: "gemma-4-26B-A4B"
+  timeout: 300
+  bypass_proxy: false
+
+# ── voicebank：Qwen3-TTS VoiceDesign HTTP ──────────────────────────
+# 服务地址参考 usage_guide_qwen3.md。
+voicebank:
+  backend: qwen3_http
+  base_url: "http://10.50.121.102:8007"
+  output_subdir: "voicebank"
+  extra_args:
+    language: "Chinese"
+    reference_text: "你好，欢迎使用语音设计功能，这是一个测试句子。"
+    # 单角色 voicedesign 请求超时（秒）
+    timeout_per_char: 60
+    # 并发线程数（角色通常 3-5 个，4 线程足够把总耗时压到接近单次请求）
+    max_workers: 4
+    # 黄区内网调用必须 bypass 开发机全局代理（默认 true，可显式写）
+    bypass_proxy: true
+
+# ── tts：IndexTTS-2 HTTP ───────────────────────────────────────────
+# 服务地址参考 usage_guide_indextts.md。
+# IndexTTS-2 支持 8 维 emotion_vector + emotion_alpha；adapter 自动把
+# TTSInstruction.emotion 映射到向量，emotion_intensity 映射到 alpha。
+tts:
+  backend: indextts_http
+  base_url: "http://10.50.121.102:8009"
+  output_subdir: "audio_segments"
+  extra_args:
+    # 单段合成请求超时（秒）
+    timeout_per_seg: 60
+    # 并发线程数（默认 4；段数多时增大可降 RTF）
+    max_workers: 4
+    bypass_proxy: true
+    # 下面这些采样参数是可选的；不写就用服务端默认值。
+    # temperature: 0.8
+    # top_p: 0.8
+    # top_k: 30
+    # num_beams: 3
+    # repetition_penalty: 10.0
+    # max_text_tokens: 120
+    # max_mel_tokens: 1500
+    # interval_silence: 200
+
+# ── output：黄区 pipeline 输出根目录 ───────────────────────────────
+output:
+  root: "output-src-next-pipeline-yellow"
+
+# ── pipeline：流程开关 ─────────────────────────────────────────────
+pipeline:
+  save_intermediate_json: true
+  reuse_existing: false
+  stop_on_tts_error: false
+
+notes:
+  - "黄区所有模型走内网 HTTP，不走 subprocess / WSL / 本地 venv。"
+  - "Gemma4 / Qwen3 / IndexTTS 服务器地址见 usage_guide_*.md。"
+  - "黄区到蓝区切换只换 profile，不改 adapter / pipeline 代码。"
+  - "HTTP adapter 默认 bypass_proxy=true（黄区开发机有全局代理时强制无代理）。"
+  - "gemma4_http 写 bypass_proxy=false 是因为黄区到 10.50.121.123:8000 走系统默认代理；如果你的机器配了全局代理且需要绕过，改成 true。"

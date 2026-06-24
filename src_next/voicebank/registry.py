@@ -27,8 +27,9 @@ def create_voicebank_adapter(
     Args:
         backend: 后端标识。当前支持：
             - "mock": MockVoicebankAdapter（离线占位）
-            - "qwen_voicegenerator": QwenVoiceGeneratorAdapter（通用，需配路径）
-        **config: 传给具体 adapter 构造函数的参数（如 generator_root / script_path）。
+            - "qwen_voicegenerator": QwenVoiceGeneratorAdapter（subprocess 调本地 Qwen VoiceDesign，蓝区用）
+            - "qwen3_http": Qwen3HTTPAdapter（HTTP 直连服务器，黄区用）
+        **config: 传给具体 adapter 构造函数的参数（如 generator_root / script_path / base_url）。
 
     Returns:
         BaseVoicebankAdapter 实例。
@@ -45,7 +46,11 @@ def create_voicebank_adapter(
         from .qwen_voicegenerator import QwenVoiceGeneratorAdapter
         return QwenVoiceGeneratorAdapter(**config)
 
+    if backend == "qwen3_http":
+        from .qwen3_http import Qwen3HTTPAdapter
+        return Qwen3HTTPAdapter(**config)
+
     raise VoicebankError(
         f"未知 voicebank backend: {backend!r}。"
-        "当前支持: 'mock', 'qwen_voicegenerator'。"
+        "当前支持: 'mock', 'qwen_voicegenerator', 'qwen3_http'。"
     )

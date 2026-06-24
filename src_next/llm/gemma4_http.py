@@ -2,17 +2,20 @@
 
 Gemma4 HTTP 客户端（OpenAI-compatible）。
 
-服务器正在搬迁，本阶段**只保留结构**，不真实测试。
-Gemma4 部署通常不需要 API key（内网直连），因此 Authorization header 可选。
-需要支持绕过代理（蓝区开发机常配了全局代理，内网调用要 bypass）。
+黄区部署信息：
+    base_url: http://10.50.121.123:8000/v1/chat/completions
+    model:    gemma-4-26B-A4B
+    timeout:  300
+    bypass_proxy: false   # 黄区内网直连，不走代理
 
-环境变量：
-    GEMMA4_BASE_URL  必填，服务器恢复后在 .env 中配置
-    GEMMA4_API_KEY   可选，绝大多数 Gemma4 部署不需要
-    GEMMA4_MODEL     可选，默认 gemma4-31B
+Gemma4 内网部署通常不需要 API key（Authorization header 仅在配置了 key 时才带）。
 
-服务器恢复后只需要在 .env 配置 GEMMA4_BASE_URL，本客户端即可工作；
-不需要改 core/analysis 层，也不需要改其他 LLM 后端。
+环境变量（可选，黄区 yaml 通常把参数直接写进 profile）：
+    GEMMA4_BASE_URL  覆盖 base_url
+    GEMMA4_API_KEY   可选鉴权
+    GEMMA4_MODEL     覆盖 model（默认 gemma-4-26B-A4B）
+
+切换蓝区 / 黄区只换 profile yaml，不改本客户端。
 """
 
 from __future__ import annotations
@@ -31,14 +34,14 @@ from .qwen_http import (
 )
 
 
-_DEFAULT_MODEL = "gemma4-31B"
+_DEFAULT_MODEL = "gemma-4-26B-A4B"
 _DEFAULT_MAX_TOKENS = 1024
 _DEFAULT_TEMPERATURE = 0.1
-_DEFAULT_TIMEOUT: tuple[float, float] = (10.0, 180.0)
+_DEFAULT_TIMEOUT: tuple[float, float] = (10.0, 300.0)
 
 
 class Gemma4HTTPClient(BaseLLMClient):
-    """Gemma4 服务器恢复后启用；本阶段不真实测试。"""
+    """Gemma4 OpenAI-compatible HTTP 客户端（黄区内网部署）。"""
 
     def __init__(
         self,
