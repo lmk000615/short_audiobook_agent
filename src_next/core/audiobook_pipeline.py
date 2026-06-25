@@ -58,8 +58,10 @@ import sys
 import time
 import wave
 from dataclasses import asdict, fields as dataclass_fields, is_dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+import traceback
 
 import yaml
 
@@ -77,7 +79,7 @@ from .data_models import (
     TTSInstruction,
     VoicebankResult,
 )
-from .logging_utils import log_item, log_stage_done, log_stage_start
+from .logging_utils import StageLogger, log_item, log_stage_done, log_stage_start
 from .segment_builder import build_segments
 from .tts_instruction_builder import build_tts_instructions
 
@@ -355,6 +357,96 @@ def _build_pipeline_summary(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Shared helpers（run_pipeline 和 run_pipeline_stream 共用，避免重复实现）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _prepare_paths(
+    input_path: str,
+    profile_dict: dict[str, Any],
+    *,
+    output_root: str | None,
+    story_name: str | None,
+    task_id: str | None = None,
+) -> tuple[Path, Path, Path, str]:
+    """解析 output_dir / json_dir / audio_final_dir 并 mkdir。
+
+    Args:
+        input_path: 输入 txt 路径；用于在 story_name 缺失时回退到文件 stem。
+        profile_dict: 已加载的 profile dict（含 output.root）。
+        output_root: 覆盖 profile['output']['root']；None → 用 profile 值。
+        story_name: 覆盖文件 stem；None → Path(input_path).stem。
+        task_id: WebUI 任务隔离用；非空时 output_dir 多套一层 ``<task_id>/``。
+
+    Returns:
+        (output_dir, json_dir, audio_final_dir, story_name_resolved)。
+        json_dir 和 audio_final_dir 已 mkdir；output_dir 父目录也已 mkdir。
+    """
+    story_name_resolved = story_name or _story_name_from_path(input_path)
+    output_root_resolved = output_root or profile_dict["output"]["root"]
+    base = Path(output_root_resolved).expanduser().resolve() / story_name_resolved
+    output_dir = base / task_id if task_id else base
+    json_dir = output_dir / "json"
+    audio_final_dir = output_dir / "audio_final"
+    json_dir.mkdir(parents=True, exist_ok=True)
+    audio_final_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir, json_dir, audio_final_dir, story_name_resolved
+
+
+def _build_pipeline_result(
+    *,
+    story_name: str,
+    output_dir: Path,
+    final_audio_path: str | None,
+    success: bool,
+    stages: list[dict[str, Any]],
+    stage_timings: dict[str, float],
+    artifacts: dict[str, str],
+    total_time: float,
+    error: str = "",
+) -> PipelineResult:
+    """构造 PipelineResult；内部调 _build_pipeline_summary + _log_summary。
+
+    **不写 pipeline_result.json**——文件保存由调用方控制错误处理策略：
+    * 成功路径：直接 _save_json；如失败由外层 except 兜底
+    * 失败路径：try/except 包住 _save_json，避免磁盘错误再抛
+
+    Args:
+        success: True 时 error 应为空字符串。
+        error: 失败原因；空字符串表示成功。
+    """
+    summary = _build_pipeline_summary(
+        stages=stages,
+        total_time=total_time,
+        output_dir=str(output_dir),
+        final_audio_path=final_audio_path,
+    )
+    _log_summary(
+        success=success,
+        total_time=total_time,
+        analysis_time=summary["analysis_time_sec"],
+        voicebank_time=summary["voicebank_time_sec"],
+        tts_time=summary["tts_time_sec"],
+        merge_time=summary["merge_time_sec"],
+        final_audio_duration=summary["final_audio_duration_sec"],
+        rtf=summary["rtf"],
+        output_dir=str(output_dir),
+        final_audio=final_audio_path,
+        error=error,
+    )
+    return PipelineResult(
+        story_name=story_name,
+        output_dir=str(output_dir),
+        final_audio=final_audio_path,
+        success=success,
+        stage_timings=stage_timings,
+        artifacts=artifacts,
+        error=error,
+        pipeline_summary=summary,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 真实端到端 pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -390,13 +482,11 @@ def run_pipeline(
         profile_path_str = str(profile)
         profile_dict = _load_pipeline_profile(profile)
 
-    story_name = story_name or _story_name_from_path(input_path)
-    output_root_resolved = output_root or profile_dict["output"]["root"]
-    output_dir = Path(output_root_resolved).expanduser().resolve() / story_name
-    json_dir = output_dir / "json"
-    audio_final_dir = output_dir / "audio_final"
-    json_dir.mkdir(parents=True, exist_ok=True)
-    audio_final_dir.mkdir(parents=True, exist_ok=True)
+    # CLI 路径不传 task_id（向后兼容）；WebUI 走 run_pipeline_stream 时传入
+    output_dir, json_dir, audio_final_dir, story_name = _prepare_paths(
+        input_path, profile_dict,
+        output_root=output_root, story_name=story_name, task_id=None,
+    )
 
     pipeline_cfg = profile_dict["pipeline"]
     save_json = bool(pipeline_cfg.get("save_intermediate_json", True))
@@ -669,29 +759,16 @@ def run_pipeline(
         if failed_segments and stop_on_tts_error:
             err = f"TTS failed {len(failed_segments)}/{len(audio_segments)} segments; stop_on_tts_error=true"
             total_time = time.time() - t_total_start
-            summary = _build_pipeline_summary(
-                stages=stages, total_time=total_time,
-                output_dir=str(output_dir), final_audio_path=None,
-            )
-            _log_summary(
-                success=False, total_time=total_time,
-                analysis_time=summary["analysis_time_sec"],
-                voicebank_time=summary["voicebank_time_sec"],
-                tts_time=summary["tts_time_sec"],
-                merge_time=0.0,
-                final_audio_duration=None, rtf=None,
-                output_dir=str(output_dir), final_audio=None,
-                error=err,
-            )
-            pipeline_result = PipelineResult(
+            pipeline_result = _build_pipeline_result(
                 story_name=story_name,
-                output_dir=str(output_dir),
-                final_audio=None,
+                output_dir=output_dir,
+                final_audio_path=None,
                 success=False,
+                stages=stages,
                 stage_timings=stage_timings,
                 artifacts=artifacts,
+                total_time=total_time,
                 error=err,
-                pipeline_summary=summary,
             )
             _save_json(pipeline_result, json_dir / "pipeline_result.json")
             raise RuntimeError(err)
@@ -727,33 +804,16 @@ def run_pipeline(
         # ── Summary ─────────────────────────────────────────────────
         total_time = time.time() - t_total_start
         success = (not failed_segments) and audio_result.success
-        summary = _build_pipeline_summary(
-            stages=stages, total_time=total_time,
-            output_dir=str(output_dir),
-            final_audio_path=final_audio_path,
-        )
-        _log_summary(
-            success=success, total_time=total_time,
-            analysis_time=summary["analysis_time_sec"],
-            voicebank_time=summary["voicebank_time_sec"],
-            tts_time=summary["tts_time_sec"],
-            merge_time=summary["merge_time_sec"],
-            final_audio_duration=summary["final_audio_duration_sec"],
-            rtf=summary["rtf"],
-            output_dir=str(output_dir),
-            final_audio=final_audio_path,
-            error="",
-        )
-
-        pipeline_result = PipelineResult(
+        pipeline_result = _build_pipeline_result(
             story_name=story_name,
-            output_dir=str(output_dir),
-            final_audio=final_audio_path,
+            output_dir=output_dir,
+            final_audio_path=final_audio_path,
             success=success,
+            stages=stages,
             stage_timings=stage_timings,
             artifacts=artifacts,
+            total_time=total_time,
             error="",
-            pipeline_summary=summary,
         )
         _save_json(pipeline_result, json_dir / "pipeline_result.json")
         artifacts["pipeline_result"] = str(json_dir / "pipeline_result.json")
@@ -763,41 +823,489 @@ def run_pipeline(
         # 兜底：尽量把已收集的 stage 信息写到 pipeline_result.json，再返回失败
         error_msg = f"{type(err).__name__}: {err}"
         total_time = time.time() - t_total_start
-        summary = _build_pipeline_summary(
-            stages=stages, total_time=total_time,
-            output_dir=str(output_dir),
-            final_audio_path=final_audio_path,
-        )
-        # 失败前最后一条 stage 日志（如果还没打过）
-        # 这里不再尝试 _log_stage_failed，因为可能 stage 已经打过 done 了；
-        # 失败信息走 [Summary] 的 error 字段。
-        _log_summary(
-            success=False, total_time=total_time,
-            analysis_time=summary["analysis_time_sec"],
-            voicebank_time=summary["voicebank_time_sec"],
-            tts_time=summary["tts_time_sec"],
-            merge_time=summary["merge_time_sec"],
-            final_audio_duration=summary["final_audio_duration_sec"],
-            rtf=summary["rtf"],
-            output_dir=str(output_dir),
-            final_audio=final_audio_path,
-            error=error_msg,
-        )
-        pipeline_result = PipelineResult(
+        pipeline_result = _build_pipeline_result(
             story_name=story_name,
-            output_dir=str(output_dir),
-            final_audio=final_audio_path,
+            output_dir=output_dir,
+            final_audio_path=final_audio_path,
             success=False,
+            stages=stages,
             stage_timings=stage_timings,
             artifacts=artifacts,
+            total_time=total_time,
             error=error_msg,
-            pipeline_summary=summary,
         )
         try:
             _save_json(pipeline_result, json_dir / "pipeline_result.json")
         except Exception:
             pass
         return pipeline_result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generator 版 pipeline（给 WebUI 用）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_event(event_type: str, **kwargs: Any) -> dict[str, Any]:
+    """构造标准 event dict；自动加 timestamp。"""
+    evt: dict[str, Any] = {
+        "type": event_type,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    evt.update(kwargs)
+    return evt
+
+
+def run_pipeline_stream(
+    input_path: str,
+    profile: dict[str, Any] | str | Path,
+    *,
+    output_root: str | None = None,
+    story_name: str | None = None,
+    reuse_existing_override: bool | None = None,
+    task_id: str | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Generator 版 ``run_pipeline``；yield 标准 event 给 WebUI 消费。
+
+    与 ``run_pipeline`` 共享：
+        * ``_load_pipeline_profile`` — profile 加载 + 校验
+        * ``_prepare_paths`` — 路径准备（支持 task_id 隔离）
+        * ``_build_pipeline_result`` — 结果 / 失败结果构造 + 日志 summary
+        * ``StageLogger`` — 三合一日志（终端 + 文件 + 累积器）
+
+    Args:
+        task_id: WebUI 任务隔离用；非空时 output_dir = ``<root>/<story>/<task_id>/``。
+            None → 沿用 CLI 路径 ``<root>/<story>/``。
+
+    Yields (按顺序):
+        * ``{"type": "stage_start",  "step", "name", "stage_index", "total_stages", "timestamp"}``
+        * ``{"type": "stage_done",   "step", "name", "stage_index", "elapsed_sec", "extra", "cumulative_sec"}``
+        * ``{"type": "stage_reused", "step", "name", "stage_index", "src", "elapsed_sec"}``
+        * ``{"type": "stage_failed", "step", "name", "stage_index", "elapsed_sec", "error"}``
+        * ``{"type": "result", "result": PipelineResult, "logs": str}`` — 成功结束
+        * ``{"type": "error",  "error": str, "traceback": str, "result": PipelineResult, "logs": str}`` — 失败结束
+
+    Note:
+        CLI ``main()`` 不调本生成器；继续调 sync ``run_pipeline``。
+    """
+    t_total_start = time.time()
+
+    # ── profile 加载 ──────────────────────────────────────────────────
+    profile_path_str: str | None = None
+    if isinstance(profile, dict):
+        profile_dict = profile
+    else:
+        profile_path_str = str(profile)
+        profile_dict = _load_pipeline_profile(profile)
+
+    # ── 路径准备（支持 task_id 隔离）──────────────────────────────────
+    output_dir, json_dir, audio_final_dir, story_name = _prepare_paths(
+        input_path, profile_dict,
+        output_root=output_root, story_name=story_name, task_id=task_id,
+    )
+
+    # ── StageLogger（写 <output_dir>/logs/pipeline.log + stdout + 累积） ──
+    logger = StageLogger(output_dir=output_dir, also_print=True)
+    logger.pipeline_header(input_path, profile_path_str, str(output_dir))
+
+    # ── pipeline 配置 ─────────────────────────────────────────────────
+    pipeline_cfg = profile_dict["pipeline"]
+    save_json = bool(pipeline_cfg.get("save_intermediate_json", True))
+    reuse = bool(pipeline_cfg.get("reuse_existing", False))
+    if reuse_existing_override is not None:
+        reuse = reuse_existing_override
+    stop_on_tts_error = bool(pipeline_cfg.get("stop_on_tts_error", False))
+
+    # ── 状态容器 ──────────────────────────────────────────────────────
+    stages: list[dict[str, Any]] = []
+    stage_timings: dict[str, float] = {}
+    artifacts: dict[str, str] = {}
+    final_audio_path: str | None = None
+    failed_segments: list[Any] = []
+
+    text: str = ""  # stage 1 读出后给后续 stage 当 story_context
+
+    try:
+        # ── Stage 1/10: build_segments ──────────────────────────────
+        step, name = "1/10", "build_segments"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=1, total_stages=10)
+        t0 = time.time()
+        text = Path(input_path).read_text(encoding="utf-8-sig")
+        story_input = StoryInput(
+            story_name=story_name, text=text, source_path=str(input_path),
+        )
+        segments_raw = build_segments(story_input)
+        elapsed = time.time() - t0
+        seg_raw_path = json_dir / "segments_raw.json"
+        if save_json:
+            _save_json(segments_raw, seg_raw_path)
+            artifacts["segments_raw"] = str(seg_raw_path)
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status="success",
+                              elapsed=elapsed, mode="run", output=str(seg_raw_path))
+        extra = f"segments={len(segments_raw)}"
+        logger.stage_done(step, name, elapsed, extra=extra)
+        yield _make_event("stage_done", step=step, name=name, stage_index=1,
+                          elapsed_sec=elapsed, extra=extra,
+                          cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 2/10: create_llm_client ───────────────────────────
+        step, name = "2/10", "create_llm_client"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=2, total_stages=10)
+        t0 = time.time()
+        llm_backend, llm_cfg = _split_backend_block(profile_dict, "llm")
+        llm_client = create_llm_client(llm_backend, **llm_cfg)
+        elapsed = time.time() - t0
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status="success",
+                              elapsed=elapsed, mode="run", output="")
+        llm_model = getattr(llm_client, "model", "")
+        extra = f"backend={llm_backend}, model={llm_model}"
+        logger.stage_done(step, name, elapsed, extra=extra)
+        yield _make_event("stage_done", step=step, name=name, stage_index=2,
+                          elapsed_sec=elapsed, extra=extra,
+                          cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 3/10: quote_classifier ────────────────────────────
+        step, name = "3/10", "quote_classifier"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=3, total_stages=10)
+        t0 = time.time()
+        merged_path = json_dir / "segments_after_quote_merge.json"
+        quote_debug_path = json_dir / "quote_classifications.json"
+        mode = "run"
+        if reuse:
+            reused = _try_load_json(merged_path, _load_segments)
+            if reused is not None:
+                segments_merged = reused
+                mode = "reused"
+        if mode == "run":
+            segments_merged = classify_and_merge_quotes(
+                segments_raw, llm_client,
+                story_context=story_name,
+                output_debug_path=str(quote_debug_path),
+            )
+            if save_json:
+                _save_json(segments_merged, merged_path)
+        elapsed = time.time() - t0
+        if save_json:
+            artifacts["segments_after_quote_merge"] = str(merged_path)
+            if mode == "run" and quote_debug_path.exists():
+                artifacts["quote_classifications"] = str(quote_debug_path)
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status="success",
+                              elapsed=elapsed, mode=mode, output=str(merged_path))
+        if mode == "reused":
+            logger.stage_reused(step, name, merged_path.name, elapsed)
+            yield _make_event("stage_reused", step=step, name=name, stage_index=3,
+                              src=merged_path.name, elapsed_sec=elapsed)
+        else:
+            extra = f"segments_after_merge={len(segments_merged)}"
+            logger.stage_done(step, name, elapsed, extra=extra)
+            yield _make_event("stage_done", step=step, name=name, stage_index=3,
+                              elapsed_sec=elapsed, extra=extra,
+                              cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 4/10: story_resolver ──────────────────────────────
+        step, name = "4/10", "story_resolver"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=4, total_stages=10)
+        t0 = time.time()
+        resolved_path = json_dir / "resolved_segments.json"
+        mode = "run"
+        if reuse:
+            reused = _try_load_json(resolved_path, _load_segments)
+            if reused is not None:
+                resolved = reused
+                mode = "reused"
+        if mode == "run":
+            resolved = resolve_speakers(segments_merged, llm_client, story_context=text)
+            if save_json:
+                _save_json(resolved, resolved_path)
+        elapsed = time.time() - t0
+        if save_json:
+            artifacts["resolved_segments"] = str(resolved_path)
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status="success",
+                              elapsed=elapsed, mode=mode, output=str(resolved_path))
+        if mode == "reused":
+            logger.stage_reused(step, name, resolved_path.name, elapsed)
+            yield _make_event("stage_reused", step=step, name=name, stage_index=4,
+                              src=resolved_path.name, elapsed_sec=elapsed)
+        else:
+            extra = f"resolved={len(resolved)}"
+            logger.stage_done(step, name, elapsed, extra=extra)
+            yield _make_event("stage_done", step=step, name=name, stage_index=4,
+                              elapsed_sec=elapsed, extra=extra,
+                              cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 5/10: character_analyzer ──────────────────────────
+        step, name = "5/10", "character_analyzer"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=5, total_stages=10)
+        t0 = time.time()
+        characters_path = json_dir / "characters.json"
+        mode = "run"
+        if reuse:
+            reused = _try_load_json(characters_path, _load_characters)
+            if reused is not None:
+                characters = reused
+                mode = "reused"
+        if mode == "run":
+            characters = analyze_characters(resolved, llm_client, story_context=text)
+            if save_json:
+                _save_json(characters, characters_path)
+        elapsed = time.time() - t0
+        if save_json:
+            artifacts["characters"] = str(characters_path)
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status="success",
+                              elapsed=elapsed, mode=mode, output=str(characters_path))
+        if mode == "reused":
+            logger.stage_reused(step, name, characters_path.name, elapsed)
+            yield _make_event("stage_reused", step=step, name=name, stage_index=5,
+                              src=characters_path.name, elapsed_sec=elapsed)
+        else:
+            extra = f"characters={len(characters)}"
+            logger.stage_done(step, name, elapsed, extra=extra)
+            yield _make_event("stage_done", step=step, name=name, stage_index=5,
+                              elapsed_sec=elapsed, extra=extra,
+                              cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 6/10: voicebank ───────────────────────────────────
+        step, name = "6/10", "voicebank"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=6, total_stages=10)
+        t0 = time.time()
+        voicebank_result_path = json_dir / "voicebank_result.json"
+        mode = "run"
+        if reuse:
+            reused = _try_load_json(voicebank_result_path, _load_voicebank_result)
+            if reused is not None:
+                voicebank_result = reused
+                mode = "reused"
+        if mode == "run":
+            vb_backend, vb_cfg = _split_backend_block(profile_dict, "voicebank")
+            vb_adapter = create_voicebank_adapter(vb_backend, **vb_cfg)
+            voicebank_result = vb_adapter.prepare_voicebank(characters, str(output_dir))
+            if save_json:
+                _save_json(voicebank_result, voicebank_result_path)
+        elapsed = time.time() - t0
+        if save_json:
+            artifacts["voicebank_result"] = str(voicebank_result_path)
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status="success",
+                              elapsed=elapsed, mode=mode,
+                              output=str(voicebank_result_path))
+        n_voices = len(voicebank_result.speaker_to_voice or {})
+        if mode == "reused":
+            logger.stage_reused(step, name, voicebank_result_path.name, elapsed)
+            yield _make_event("stage_reused", step=step, name=name, stage_index=6,
+                              src=voicebank_result_path.name, elapsed_sec=elapsed)
+        else:
+            extra = f"voices={n_voices}"
+            logger.stage_done(step, name, elapsed, extra=extra)
+            yield _make_event("stage_done", step=step, name=name, stage_index=6,
+                              elapsed_sec=elapsed, extra=extra,
+                              cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 7/10: story_director ──────────────────────────────
+        step, name = "7/10", "story_director"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=7, total_stages=10)
+        t0 = time.time()
+        director_path = json_dir / "director_plan.json"
+        mode = "run"
+        if reuse:
+            reused = _try_load_json(director_path, _load_director_plan)
+            if reused is not None:
+                director_plan = reused
+                mode = "reused"
+        if mode == "run":
+            director_plan = generate_director_plan(
+                resolved, characters, llm_client, story_context=story_name,
+            )
+            if save_json:
+                _save_json(director_plan, director_path)
+        elapsed = time.time() - t0
+        if save_json:
+            artifacts["director_plan"] = str(director_path)
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status="success",
+                              elapsed=elapsed, mode=mode, output=str(director_path))
+        if mode == "reused":
+            logger.stage_reused(step, name, director_path.name, elapsed)
+            yield _make_event("stage_reused", step=step, name=name, stage_index=7,
+                              src=director_path.name, elapsed_sec=elapsed)
+        else:
+            extra = f"instructions={len(director_plan)}"
+            logger.stage_done(step, name, elapsed, extra=extra)
+            yield _make_event("stage_done", step=step, name=name, stage_index=7,
+                              elapsed_sec=elapsed, extra=extra,
+                              cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 8/10: tts_instruction_builder ─────────────────────
+        step, name = "8/10", "tts_instruction_builder"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=8, total_stages=10)
+        t0 = time.time()
+        tts_instructions = build_tts_instructions(
+            segments=resolved,
+            characters=characters,
+            director_plan=director_plan,
+            voicebank_result=voicebank_result,
+        )
+        elapsed = time.time() - t0
+        tts_instructions_path = json_dir / "tts_instructions.json"
+        if save_json:
+            _save_json(tts_instructions, tts_instructions_path)
+            artifacts["tts_instructions"] = str(tts_instructions_path)
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status="success",
+                              elapsed=elapsed, mode="run",
+                              output=str(tts_instructions_path))
+        extra = f"instructions={len(tts_instructions)}"
+        logger.stage_done(step, name, elapsed, extra=extra)
+        yield _make_event("stage_done", step=step, name=name, stage_index=8,
+                          elapsed_sec=elapsed, extra=extra,
+                          cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 9/10: tts_synthesis ───────────────────────────────
+        step, name = "9/10", "tts_synthesis"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=9, total_stages=10)
+        t0 = time.time()
+        audio_subdir = profile_dict["tts"].get("output_subdir", "audio_segments")
+        audio_dir = output_dir / audio_subdir
+        all_wavs_exist = all(
+            (audio_dir / inst.output_filename).exists()
+            and (audio_dir / inst.output_filename).stat().st_size > 0
+            for inst in tts_instructions
+        ) if tts_instructions else False
+        tts_backend, tts_cfg = _split_backend_block(profile_dict, "tts")
+        tts_adapter = create_tts_adapter(tts_backend, **tts_cfg)
+        audio_segments = tts_adapter.synthesize(
+            tts_instructions, voicebank_result, str(output_dir),
+            dry_run=False, limit=0,
+        )
+        elapsed = time.time() - t0
+        audio_seg_results_path = json_dir / "audio_segment_results.json"
+        _save_json(audio_segments, audio_seg_results_path)
+        artifacts["audio_segment_results"] = str(audio_seg_results_path)
+        success_n = sum(1 for r in audio_segments if r.success)
+        failed_segments = [r for r in audio_segments if not r.success]
+        stage_status = "success" if not failed_segments else "failed"
+        mode = "cached" if all_wavs_exist else "run"
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name, status=stage_status,
+                              elapsed=elapsed, mode=mode,
+                              output=str(audio_seg_results_path),
+                              error=(f"{len(failed_segments)} segments failed" if failed_segments else None))
+        extra_str = f"success={success_n}/{len(audio_segments)}"
+        if mode == "cached":
+            extra_str += ", cached"
+        logger.stage_done(step, name, elapsed, extra=extra_str)
+        yield _make_event("stage_done", step=step, name=name, stage_index=9,
+                          elapsed_sec=elapsed, extra=extra_str,
+                          cumulative_sec=time.time() - t_total_start)
+
+        # stop_on_tts_error 处理
+        if failed_segments and stop_on_tts_error:
+            err = f"TTS failed {len(failed_segments)}/{len(audio_segments)} segments; stop_on_tts_error=true"
+            total_time = time.time() - t_total_start
+            pipeline_result = _build_pipeline_result(
+                story_name=story_name, output_dir=output_dir,
+                final_audio_path=None, success=False,
+                stages=stages, stage_timings=stage_timings,
+                artifacts=artifacts, total_time=total_time, error=err,
+            )
+            _save_json(pipeline_result, json_dir / "pipeline_result.json")
+            yield _make_event(
+                "error", error=err, traceback="",
+                result=pipeline_result, logs=logger.get_full_text(),
+            )
+            return
+
+        # ── Stage 10/10: audio_merger ───────────────────────────────
+        step, name = "10/10", "audio_merger"
+        logger.stage_start(step, name)
+        yield _make_event("stage_start", step=step, name=name,
+                          stage_index=10, total_stages=10)
+        t0 = time.time()
+        pause_map = {
+            inst.segment_id: inst.pause_hint
+            for inst in tts_instructions
+            if inst.pause_hint and inst.pause_hint > 0
+        }
+        final_path = audio_final_dir / f"{story_name}.wav"
+        audio_result = merge_audio_segments(
+            audio_segments, str(final_path), pause_seconds_after=pause_map,
+        )
+        elapsed = time.time() - t0
+        audio_result_path = json_dir / "audio_result.json"
+        if save_json:
+            _save_json(audio_result, audio_result_path)
+            artifacts["audio_result"] = str(audio_result_path)
+        stage_timings[name] = elapsed
+        _append_stage_record(stages, name=name,
+                              status="success" if audio_result.success else "failed",
+                              elapsed=elapsed, mode="run",
+                              output=str(audio_result_path))
+        rel_final = f"audio_final/{story_name}.wav"
+        logger.stage_done(step, name, elapsed, extra=f"final={rel_final}")
+        yield _make_event("stage_done", step=step, name=name, stage_index=10,
+                          elapsed_sec=elapsed, extra=f"final={rel_final}",
+                          cumulative_sec=time.time() - t_total_start)
+
+        final_audio_path = audio_result.final_audio
+
+        # ── Summary ─────────────────────────────────────────────────
+        total_time = time.time() - t_total_start
+        success = (not failed_segments) and audio_result.success
+        pipeline_result = _build_pipeline_result(
+            story_name=story_name, output_dir=output_dir,
+            final_audio_path=final_audio_path, success=success,
+            stages=stages, stage_timings=stage_timings,
+            artifacts=artifacts, total_time=total_time, error="",
+        )
+        _save_json(pipeline_result, json_dir / "pipeline_result.json")
+        artifacts["pipeline_result"] = str(json_dir / "pipeline_result.json")
+        yield _make_event(
+            "result", result=pipeline_result, logs=logger.get_full_text(),
+        )
+
+    except Exception as err:
+        # 兜底：尽量把已收集的 stage 信息写到 pipeline_result.json，再返回失败
+        error_msg = f"{type(err).__name__}: {err}"
+        tb_str = traceback.format_exc()
+        total_time = time.time() - t_total_start
+        pipeline_result = _build_pipeline_result(
+            story_name=story_name, output_dir=output_dir,
+            final_audio_path=final_audio_path, success=False,
+            stages=stages, stage_timings=stage_timings,
+            artifacts=artifacts, total_time=total_time, error=error_msg,
+        )
+        try:
+            _save_json(pipeline_result, json_dir / "pipeline_result.json")
+        except Exception:
+            pass
+        yield _make_event(
+            "error", error=error_msg, traceback=tb_str,
+            result=pipeline_result, logs=logger.get_full_text(),
+        )
+    finally:
+        logger.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
