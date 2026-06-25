@@ -54,6 +54,11 @@ MAX_TXT_FILE_SIZE_BYTES = 20 * 1024  # 20 KB
 DEFAULT_CONCURRENCY = 5
 DEFAULT_QUEUE_SIZE = 20
 
+# WebUI 任务输出根目录（与 CLI 的 output-src-next/ 同级，互不干扰）。
+# 实际任务路径：``output-src-next-webui/<profile_stem>/<task_id>/``。
+# story_name 不进路径，仅作文件名（input/<story>.txt、audio_final/<story>.wav）。
+WEBUI_OUTPUT_ROOT = "output-src-next-webui"
+
 _PROFILES_DIR = "src_next/profiles"
 
 # 10 stages（与 audiobook_pipeline.run_pipeline_stream 一致）
@@ -242,12 +247,15 @@ def _is_task_id(name: str) -> bool:
     return bool(re.match(r"^\d{8}_\d{6}(_[A-Za-z0-9]+)?$", name))
 
 
-def _find_latest_task_id(output_root: str, story_name: str) -> str | None:
-    """扫描 ``<output_root>/<story_name>`` 下所有 task_id 子目录，返回最新。"""
-    story_dir = Path(output_root).expanduser().resolve() / story_name
-    if not story_dir.exists():
+def _find_latest_task_id(profile_stem: str) -> str | None:
+    """扫描 ``<WEBUI_OUTPUT_ROOT>/<profile_stem>`` 下所有 task_id 子目录，返回最新。
+
+    新布局下 story_name 不进路径，所以复用查找只需 profile_stem 一层。
+    """
+    profile_dir = Path(WEBUI_OUTPUT_ROOT).expanduser().resolve() / profile_stem
+    if not profile_dir.exists():
         return None
-    task_ids = [p.name for p in story_dir.iterdir() if p.is_dir() and _is_task_id(p.name)]
+    task_ids = [p.name for p in profile_dir.iterdir() if p.is_dir() and _is_task_id(p.name)]
     if not task_ids:
         return None
     return sorted(task_ids)[-1]
@@ -449,7 +457,7 @@ def generate_audiobook_handler(
         )
         return
 
-    # ── 2. 加载 profile 拿 output_root ──────────────────────────────
+    # ── 2. 加载 profile（用于 LLM/voicebank/tts 配置；output.root 被忽略） ──
     try:
         profile_dict = load_yaml(profile_path)
     except Exception as err:
@@ -460,21 +468,18 @@ def generate_audiobook_handler(
         )
         return
 
-    output_root = (profile_dict.get("output") or {}).get("root")
-    if not output_root:
-        yield _build_yield(
-            error_value="profile 缺 output.root 字段",
-            error_visible=True,
-            btn_interactive=True,
-        )
-        return
+    # WebUI 强制用自己的 output root，不走 profile['output']['root']
+    # （避免和 CLI 跑的产物混在 output-src-next/<story>/ 里）。
+    # 路径布局：<WEBUI_OUTPUT_ROOT>/<profile_stem>/<task_id>/
+    profile_stem = Path(profile_path).stem
+    webui_output_root = str(Path(WEBUI_OUTPUT_ROOT) / profile_stem)
 
     # ── 3. 推断 story_name + 处理 reuse_existing ────────────────────
     story_name = _derive_story_name(text, file_upload)
 
     if reuse_existing:
-        # 复用模式：查找最新 task_id；找不到则正常生成新 task
-        existing_task_id = _find_latest_task_id(output_root, story_name)
+        # 复用模式：扫描 <WEBUI_OUTPUT_ROOT>/<profile_stem>/ 下最新 task_id
+        existing_task_id = _find_latest_task_id(profile_stem)
         if existing_task_id:
             task_id = existing_task_id
         else:
@@ -483,20 +488,21 @@ def generate_audiobook_handler(
         task_id = now_timestamp()
 
     # ── 4. 构造 output_dir + 落盘 input 文件 ────────────────────────
-    output_dir = Path(output_root).expanduser().resolve() / story_name / task_id
+    # task_id_layout=True → output_dir = <webui_output_root>/<task_id>/（无 story_name 层）
+    output_dir = Path(webui_output_root).expanduser().resolve() / task_id
     # task_id 同秒冲突保护：dir 已存在则追加 3 位毫秒戳
     if output_dir.exists():
         from datetime import datetime as _dt
         ms_suffix = _dt.now().strftime("%f")[:3]
         task_id = f"{task_id}_{ms_suffix}"
-        output_dir = Path(output_root).expanduser().resolve() / story_name / task_id
+        output_dir = Path(webui_output_root).expanduser().resolve() / task_id
     input_dir = output_dir / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
     input_file = input_dir / f"{story_name}.txt"
     input_file.write_text(text, encoding="utf-8")
 
     # ── 5. 找 profile 友好名（给 result bar 用） ────────────────────
-    profile_display_name = Path(profile_path).stem
+    profile_display_name = profile_stem
     try:
         for p in discover_profiles(_PROFILES_DIR):
             if p["path"] == profile_path:
@@ -509,7 +515,13 @@ def generate_audiobook_handler(
     yield _build_yield(
         error_visible=False,
         progress_value=_render_stage_panel_initial(),
-        log_display_value=f"🚀 开始生成...\nProfile: {profile_display_name}\nTask ID: {task_id}\nStory: {story_name}\n",
+        log_display_value=(
+            f"🚀 开始生成...\n"
+            f"Profile: {profile_display_name}\n"
+            f"Task ID: {task_id}\n"
+            f"Story: {story_name}\n"
+            f"输出目录: {output_dir}\n"
+        ),
         btn_interactive=False,
     )
 
@@ -522,8 +534,10 @@ def generate_audiobook_handler(
         for event in run_pipeline_stream(
             str(input_file),
             profile_dict,
+            output_root=webui_output_root,
             story_name=story_name,
             task_id=task_id,
+            task_id_layout=True,
             reuse_existing_override=reuse_override,
         ):
             events_collected.append(event)

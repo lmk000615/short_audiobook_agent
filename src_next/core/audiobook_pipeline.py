@@ -368,6 +368,7 @@ def _prepare_paths(
     output_root: str | None,
     story_name: str | None,
     task_id: str | None = None,
+    task_id_layout: bool = False,
 ) -> tuple[Path, Path, Path, str]:
     """解析 output_dir / json_dir / audio_final_dir 并 mkdir。
 
@@ -375,8 +376,18 @@ def _prepare_paths(
         input_path: 输入 txt 路径；用于在 story_name 缺失时回退到文件 stem。
         profile_dict: 已加载的 profile dict（含 output.root）。
         output_root: 覆盖 profile['output']['root']；None → 用 profile 值。
-        story_name: 覆盖文件 stem；None → Path(input_path).stem。
-        task_id: WebUI 任务隔离用；非空时 output_dir 多套一层 ``<task_id>/``。
+        story_name: 覆盖文件 stem；None → Path(input_path).stem。**仅用于文件名**
+            （input/<story>.txt、audio_final/<story>.wav），``task_id_layout=True``
+            时不进路径。
+        task_id: WebUI 任务隔离用。
+        task_id_layout: WebUI 专用布局。
+
+            * False（默认，CLI 兼容）：
+              ``<output_root>/<story_name>/`` 或 ``<output_root>/<story_name>/<task_id>/``
+            * True（WebUI）：
+              ``<output_root>/<task_id>/`` — **story_name 不进路径**，避免和 CLI 跑的
+              ``<output.root>/<story_name>/`` 混在一起；调用方通常把 output_root
+              设为 ``output-src-next-webui/<profile_stem>``。
 
     Returns:
         (output_dir, json_dir, audio_final_dir, story_name_resolved)。
@@ -384,8 +395,15 @@ def _prepare_paths(
     """
     story_name_resolved = story_name or _story_name_from_path(input_path)
     output_root_resolved = output_root or profile_dict["output"]["root"]
-    base = Path(output_root_resolved).expanduser().resolve() / story_name_resolved
-    output_dir = base / task_id if task_id else base
+    base = Path(output_root_resolved).expanduser().resolve()
+    if task_id:
+        if task_id_layout:
+            output_dir = base / task_id
+        else:
+            output_dir = base / story_name_resolved / task_id
+    else:
+        # CLI 路径：永远含 story_name 一层
+        output_dir = base / story_name_resolved
     json_dir = output_dir / "json"
     audio_final_dir = output_dir / "audio_final"
     json_dir.mkdir(parents=True, exist_ok=True)
@@ -864,6 +882,7 @@ def run_pipeline_stream(
     story_name: str | None = None,
     reuse_existing_override: bool | None = None,
     task_id: str | None = None,
+    task_id_layout: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Generator 版 ``run_pipeline``；yield 标准 event 给 WebUI 消费。
 
@@ -874,8 +893,10 @@ def run_pipeline_stream(
         * ``StageLogger`` — 三合一日志（终端 + 文件 + 累积器）
 
     Args:
-        task_id: WebUI 任务隔离用；非空时 output_dir = ``<root>/<story>/<task_id>/``。
+        task_id: WebUI 任务隔离用；非空时 output_dir 含 ``<task_id>/`` 一层。
             None → 沿用 CLI 路径 ``<root>/<story>/``。
+        task_id_layout: 见 ``_prepare_paths`` docstring。WebUI 调用方传 True；
+            CLI 不调本生成器。
 
     Yields (按顺序):
         * ``{"type": "stage_start",  "step", "name", "stage_index", "total_stages", "timestamp"}``
@@ -898,10 +919,11 @@ def run_pipeline_stream(
         profile_path_str = str(profile)
         profile_dict = _load_pipeline_profile(profile)
 
-    # ── 路径准备（支持 task_id 隔离）──────────────────────────────────
+    # ── 路径准备（支持 task_id 隔离 + task_id_layout）─────────────────
     output_dir, json_dir, audio_final_dir, story_name = _prepare_paths(
         input_path, profile_dict,
-        output_root=output_root, story_name=story_name, task_id=task_id,
+        output_root=output_root, story_name=story_name,
+        task_id=task_id, task_id_layout=task_id_layout,
     )
 
     # ── StageLogger（写 <output_dir>/logs/pipeline.log + stdout + 累积） ──

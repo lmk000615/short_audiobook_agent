@@ -198,8 +198,9 @@ netstat -tulnp | grep 7860
 - **LLM** 后端（如 Gemma4 HTTP / Qwen HTTP）；
 - **Voicebank** 后端（如 Qwen3 VoiceDesign HTTP）；
 - **TTS** 后端（如 IndexTTS HTTP / CosyVoice3 HTTP）；
-- **输出目录根** (`output.root`)；
 - **Pipeline 开关**（`save_intermediate_json` / `reuse_existing` / `stop_on_tts_error`）。
+
+> **注**：profile 里的 `output.root` 字段 **WebUI 会忽略**——WebUI 强制用自己的根目录 `output-src-next-webui/<profile_stem>/`，避免和 CLI 跑的 `output-src-next/<story_name>/` 产物混在一起（详见第 10 节）。
 
 ### 下拉框可能的组合（示例）
 
@@ -312,44 +313,78 @@ RTF = 总生成耗时 / 最终音频时长
 
 ### WebUI 任务目录布局
 
+WebUI **不使用** profile 里的 `output.root`，而是固定走自己的根目录，避免和 CLI 跑的产物混在一起：
+
 ```text
-<output.root>/<story_name>/<task_id>/
-├── input/
-│   └── <story_name>.txt              ← WebUI 把 textbox 内容落盘到这里
-├── json/
-│   ├── segments_raw.json             ← stage 1 输出
-│   ├── segments_after_quote_merge.json ← stage 3 输出
-│   ├── quote_classifications.json    ← stage 3 调试产物
-│   ├── resolved_segments.json        ← stage 4 输出
-│   ├── characters.json               ← stage 5 输出
-│   ├── voicebank_result.json         ← stage 6 输出
-│   ├── director_plan.json            ← stage 7 输出
-│   ├── tts_instructions.json         ← stage 8 输出
-│   ├── audio_segment_results.json    ← stage 9 输出（含失败段信息）
-│   ├── audio_result.json             ← stage 10 输出
-│   └── pipeline_result.json          ← 最终结构化结果
-├── audio_segments/                   ← 分段 wav（实际目录名取自 profile.tts.output_subdir）
-│   └── seg_001.wav ...
-├── audio_final/
-│   └── <story_name>.wav              ← 最终合成 wav
-├── voicebank/                        ← 角色音色 wav（实际目录名取自 profile.voicebank.output_subdir）
-│   └── narrator.wav / 小红帽.wav ...
-└── logs/
-    └── pipeline.log                  ← 完整日志（含 ISO 时间戳）
+output-src-next-webui/                  ← 项目根下与 output-src-next/ 同级
+└── <profile_stem>/                     ← yaml 文件名（无 .yaml 扩展名）
+    └── <task_id>/                      ← 时间戳，如 20260625_143022
+        ├── input/
+        │   └── <story_name>.txt        ← WebUI 把 textbox 内容落盘到这里
+        ├── json/
+        │   ├── segments_raw.json             ← stage 1 输出
+        │   ├── segments_after_quote_merge.json ← stage 3 输出
+        │   ├── quote_classifications.json    ← stage 3 调试产物
+        │   ├── resolved_segments.json        ← stage 4 输出
+        │   ├── characters.json               ← stage 5 输出
+        │   ├── voicebank_result.json         ← stage 6 输出
+        │   ├── director_plan.json            ← stage 7 输出
+        │   ├── tts_instructions.json         ← stage 8 输出
+        │   ├── audio_segment_results.json    ← stage 9 输出（含失败段信息）
+        │   ├── audio_result.json             ← stage 10 输出
+        │   └── pipeline_result.json          ← 最终结构化结果
+        ├── audio_segments/                   ← 分段 wav（实际目录名取自 profile.tts.output_subdir）
+        │   └── seg_001.wav ...
+        ├── audio_final/
+        │   └── <story_name>.wav              ← 最终合成 wav
+        ├── voicebank/                        ← 角色音色 wav（实际目录名取自 profile.voicebank.output_subdir）
+        │   └── narrator.wav / 小红帽.wav ...
+        └── logs/
+            └── pipeline.log                  ← 完整日志（含 ISO 时间戳）
 ```
 
-### 路径说明
+### 路径示例
 
-- `<output.root>` 来自所选 profile 的 `output.root` 字段；
-- `<story_name>` 取自：
-  1. 上传 TXT 时 → 文件名 stem；
-  2. 文本框输入时 → 文本首行前 30 字符（经 `safe_story_name` 清理，仅保留中文 / 字母 / 数字 / `_` / `-`）；
-  3. 兜底为 `webui_story`；
-- `<task_id>` 形如 `20260625_143022`（`YYYYMMDD_HHMMSS`）；如本目录已存在（同秒冲突），自动追加 3 位毫秒戳后缀（如 `20260625_143022_456`）。
+假设 profile 是 `src_next/profiles/yellow_qwen3http_cosyvoicehttp.yaml`，task_id 是 `20260625_143022`，story_name 是「小红帽」：
 
-### CLI 路径差异（仅作参考）
+```text
+output-src-next-webui/yellow_qwen3http_cosyvoicehttp/20260625_143022/
+├── input/小红帽.txt
+├── json/pipeline_result.json
+├── audio_final/小红帽.wav
+└── logs/pipeline.log
+```
 
-CLI 直接调 `run_pipeline`（不传 `task_id`）时，输出目录是 `<output.root>/<story_name>/`，**没有 `<task_id>` 子层**。WebUI 强制走 task_id 路径以避免多用户同名故事互相覆盖。
+### 路径各层来源
+
+| 层 | 值 | 来源 |
+|---|---|---|
+| 1 | `output-src-next-webui/` | WebUI 代码常量 `WEBUI_OUTPUT_ROOT`，**固定** |
+| 2 | `<profile_stem>/` | yaml 文件名 stem，如 `yellow_qwen3http_cosyvoicehttp` |
+| 3 | `<task_id>/` | `now_timestamp()`，形如 `YYYYMMDD_HHMMSS`；同秒冲突追加 3 位毫秒戳（如 `20260625_143022_456`） |
+| 4+ | `input/` / `json/` / `audio_segments/` / `audio_final/` / `voicebank/` / `logs/` | pipeline 内部固定 |
+
+### story_name 去哪了？
+
+**story_name 不进路径**，仅作文件名：
+
+- `input/<story_name>.txt` — WebUI 落盘的输入文件名；
+- `audio_final/<story_name>.wav` — 最终音频文件名。
+
+`<story_name>` 取自：
+
+1. 上传 TXT 时 → 文件名 stem；
+2. 文本框输入时 → 文本首行前 30 字符（经 `safe_story_name` 清理，仅保留中文 / 字母 / 数字 / `_` / `-`）；
+3. 兜底为 `webui_story`。
+
+### 与 CLI 输出目录的区别
+
+| 场景 | 路径 | 说明 |
+|---|---|---|
+| **WebUI** | `output-src-next-webui/<profile_stem>/<task_id>/` | 强制走自己的根 + task_id 时间戳隔离 |
+| **CLI** | `<output.root>/<story_name>/` | 用 profile 的 `output.root`；无 task_id 层；按 story_name 组织 |
+
+两者**完全分离**：CLI 跑的产物在 `output-src-next/`（或 profile 自定义 root）下，WebUI 跑的产物在 `output-src-next-webui/` 下，互不干扰。
 
 ---
 
@@ -377,7 +412,7 @@ tail -f <task_dir>/logs/pipeline.log
 例：
 
 ```bash
-tail -f output-src-next/yellow_qwen3http_cosyvoicehttp/小红帽/20260625_143022/logs/pipeline.log
+tail -f output-src-next-webui/yellow_qwen3http_cosyvoicehttp/20260625_143022/logs/pipeline.log
 ```
 
 ### pipeline.log 格式
@@ -585,17 +620,18 @@ cat <task_dir>/json/pipeline_result.json | python -c "import json, sys; r = json
 ### 任务目录隔离
 
 - 每次点击「生成」都会创建**独立 task_id**（基于当前时间戳，如 `20260625_143022`）；
-- 任务目录互不覆盖：`<output.root>/<story_name>/<task_id>/`；
-- 即使两个用户用相同的 story_name，也不会互相覆盖（不同 task_id 子目录）。
+- 任务目录互不覆盖：`output-src-next-webui/<profile_stem>/<task_id>/`；
+- 即使两个用户用相同的 story_name，也不会互相覆盖（不同 task_id 子目录）；
+- **与 CLI 跑的 `output-src-next/<story_name>/` 完全分离**，互不干扰。
 
 ### reuse_existing（高级选项）
 
 页面右侧「高级选项」（默认折叠）内有一个「复用已有中间结果」勾选框。
 
 - 默认**关闭**；
-- 勾选后，会扫描 `<output.root>/<story_name>/` 下**最新的 task_id 子目录**，复用其中的 `segments_after_quote_merge.json` / `resolved_segments.json` / `characters.json` / `voicebank_result.json` / `director_plan.json` 等中间 JSON；
+- 勾选后，会扫描 `output-src-next-webui/<profile_stem>/` 下**最新的 task_id 子目录**，复用其中的 `segments_after_quote_merge.json` / `resolved_segments.json` / `characters.json` / `voicebank_result.json` / `director_plan.json` 等中间 JSON；
 - 找不到历史 task_id 时退化为正常生成；
-- **警告**：多人共用服务器时**不建议**开启，容易读到他人的中间结果（特别是同名 story）。
+- **警告**：多人共用服务器时**不建议**开启，容易读到他人的中间结果（同 profile 下最新 task_id 不一定是自己的）。
 
 ---
 
