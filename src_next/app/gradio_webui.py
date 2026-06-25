@@ -744,7 +744,7 @@ def create_ui() -> gr.Blocks:
         with gr.Group():
             gr.Markdown("### 🎧 生成结果")
             result_info = gr.Markdown("", visible=False, elem_classes=["result-bar"])
-            audio_player = gr.Audio(label="生成的音频", visible=False, show_download_button=False)
+            audio_player = gr.Audio(label="生成的音频", visible=False,)
             download_btn = gr.DownloadButton(
                 "💾 下载音频",
                 visible=False,
