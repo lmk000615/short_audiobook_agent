@@ -59,7 +59,9 @@ DEFAULT_QUEUE_SIZE = 20
 # story_name 不进路径，仅作文件名（input/<story>.txt、audio_final/<story>.wav）。
 WEBUI_OUTPUT_ROOT = "output-src-next-webui"
 
-_PROFILES_DIR = "src_next/profiles"
+# profiles 目录用 __file__ 推算绝对路径，不依赖启动时的 cwd。
+# 避免从非项目根目录（如 systemd / cron / ssh -c 启动）时扫描不到 profile。
+_PROFILES_DIR = str(Path(__file__).resolve().parent.parent / "profiles")
 
 # 10 stages（与 audiobook_pipeline.run_pipeline_stream 一致）
 STAGE_DISPLAY: list[tuple[str, str]] = [
@@ -660,16 +662,28 @@ def reset_handler():
 
 def create_ui() -> gr.Blocks:
     """构造 Gradio Blocks 界面。"""
-    # 启动时扫描 profiles；过滤掉 blue_* （本服务只跑黄区内网）
+    # 启动时扫描 profiles；过滤掉 blue_* （本服务只跑黄区内网）。
+    # 不静默吞异常 —— 任何扫描失败都打印到 stderr 让 webui.log 能看到，
+    # 并把错误暴露到 UI 上让用户能立即定位（而不是看一个空 dropdown）。
+    _scan_error: str | None = None
+    profiles: list[dict] = []
     try:
         all_profiles = discover_profiles(_PROFILES_DIR)
-    except Exception:
-        all_profiles = []
-    profiles = [
-        p for p in all_profiles
-        if not p.get("filename_stem", "").startswith("blue_")
-        and p.get("region", "") != "blue"
-    ]
+        profiles = [
+            p for p in all_profiles
+            if not p.get("filename_stem", "").startswith("blue_")
+            and p.get("region", "") != "blue"
+        ]
+    except Exception as e:
+        _scan_error = f"{type(e).__name__}: {e}"
+        print(
+            f"[gradio_webui] discover_profiles 失败: {_scan_error}\n"
+            f"  _PROFILES_DIR = {_PROFILES_DIR}\n"
+            f"  cwd = {Path.cwd()}",
+            file=sys.stderr, flush=True,
+        )
+        import traceback as _tb
+        _tb.print_exc(file=sys.stderr)
 
     dropdown_choices = [(p["display_name"], p["path"]) for p in profiles]
     if dropdown_choices:
@@ -683,7 +697,17 @@ def create_ui() -> gr.Blocks:
                 break
     else:
         default_profile_value = None
-        default_desc = "_未发现可用 profile（请检查 src_next/profiles/）_"
+        if _scan_error:
+            default_desc = (
+                f"❌ **扫描失败**：`{_scan_error}`\n\n"
+                f"请检查 `webui.log` 看 traceback；启动时 cwd = `{Path.cwd()}`。"
+            )
+        else:
+            default_desc = (
+                f"_未发现可用 profile（扫描目录：`{_PROFILES_DIR}`）_\n\n"
+                f"请确认该目录下有完整 5 块（llm/voicebank/tts/output/pipeline）"
+                f"的 yellow_*.yaml 文件；blue_* 已被过滤。"
+            )
 
     # 紧凑主题：减小默认 spacing / radius
     try:
