@@ -21,15 +21,21 @@ Fish Audio S2-Pro 4B TTS adapter（控制信号增强层 + 音色克隆路由）
    enable_reference_audio=true 实现音色克隆。
 
 ===========================================================================
-当前阶段（v1）：转换验证，不调真实 S2Pro API
+当前阶段（v2）：真实 HTTP 合成 + 音色克隆
 ===========================================================================
 
-v1 只产出 ``S2ProRenderResult``（包含 s2pro_text / instruction /
-reference_audio_path / params / debug_tags），把每段的转换结果落盘到
-``<audio_dir>/<segment_id>.s2pro.txt``，便于人工 / 脚本核验。
+v2 实装真实合成，调用 ``{base_url}/v1/voicegen/generate``（multipart）：
+* ``text`` ← ``S2ProRenderResult.s2pro_text``（含内联标签）
+* ``instruction`` ← 全局风格
+* ``reference_audio`` ← ``S2ProRenderResult.reference_audio_path`` 对应 wav
+  （multipart 上传，需 server 端支持，参考 ``api_server_s2pro_8010.py``）
+* ``prompt_text`` ← ``S2ProRenderResult.prompt_text``（必须与 wav 匹配）
+* ``temperature`` / ``top_p`` / ``max_new_tokens`` ← 透传
 
-v2 会改为真实 HTTP 调用（需要先扩展 ``/v1/voicegen/generate`` wrapper
-接受 reference_audio）。
+返回 wav 字节流写到 ``<audio_dir>/<segment_id>.wav``。
+
+并发：``ThreadPoolExecutor`` 默认 4 线程；可通过 profile ``max_workers`` 调整。
+失败段不阻断其他段；缓存命中（wav 已存在非空）自动跳过 HTTP。
 
 ===========================================================================
 数据流位置
@@ -57,13 +63,20 @@ S2ProRenderResult 直接对应 S2Pro API 的 multipart/form-data 字段：
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import requests
+import urllib3
+from urllib3.exceptions import InsecureRequestWarning
+
 from src_next.core.data_models import AudioSegmentResult, TTSInstruction, VoicebankResult
 
 from .base import BaseTTSAdapter, TTSError
+
+urllib3.disable_warnings(InsecureRequestWarning)
 
 
 # ─── 默认值 ──────────────────────────────────────────────────────────────────
@@ -76,6 +89,7 @@ _DEFAULT_TEMPERATURE = 0.7
 _DEFAULT_TOP_P = 0.7
 _DEFAULT_MAX_NEW_TOKENS = 4096
 _DEFAULT_TIMEOUT_PER_SEG = 300
+_DEFAULT_MAX_WORKERS = 4
 
 _DENSITY_LEVELS = ("low", "medium", "high")
 
@@ -214,6 +228,7 @@ class S2ProTTSAdapter(BaseTTSAdapter):
         # 工程参数
         self.timeout_per_seg: int = int(extra_args.get("timeout_per_seg", _DEFAULT_TIMEOUT_PER_SEG))
         self.bypass_proxy: bool = bool(extra_args.get("bypass_proxy", True))
+        self.max_workers: int = max(1, int(extra_args.get("max_workers", 4)))
 
     # ─── 公开 API ────────────────────────────────────────────────────────
 
@@ -278,7 +293,7 @@ class S2ProTTSAdapter(BaseTTSAdapter):
             debug_tags=debug_tags,
         )
 
-    # ─── BaseTTSAdapter 实现（v1 = convert-only，不调 HTTP） ─────────────
+    # ─── BaseTTSAdapter 实现（v2：真实 HTTP 调用 + reference_audio 路由） ────
 
     def synthesize(
         self,
@@ -288,15 +303,19 @@ class S2ProTTSAdapter(BaseTTSAdapter):
         *,
         dry_run: bool = False,
         limit: int = 0,
+        max_workers: int | None = None,
         **_kwargs: Any,
     ) -> list[AudioSegmentResult]:
-        """v1：转换 + 把 s2pro_text 落盘到 ``<audio_dir>/<seg>.s2pro.txt``。
+        """v2：转换 + 真实调 ``{base_url}/v1/voicegen/generate`` 合成音频。
 
-        返回 AudioSegmentResult 列表；success=False 标记"未实际合成"
-        （error 字段说明原因）。v2 会改为真实 HTTP 调用。
+        每段独立调一次 API；reference_audio 通过 multipart 上传（如
+        ``enable_reference_audio=true`` 且 ``reference_audio_path`` 有效）。
+        失败的段返回 success=False，不阻断其他段。
 
         Args:
             limit: > 0 时只处理前 N 条（调试用）。
+            max_workers: 并发线程数；None 用 self.max_workers（profile 配置）。
+            dry_run: True 时只转换 + 落盘 s2pro_text，**不调 HTTP**（保留 v1 行为）。
         """
         audio_dir = Path(output_dir).expanduser() / self.output_subdir
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -304,14 +323,10 @@ class S2ProTTSAdapter(BaseTTSAdapter):
         if limit > 0:
             instructions = instructions[:limit]
 
+        # 1. 转换 + 落盘 s2pro_text（不管 dry_run 都做，便于事后核验）
         results = self.convert_instructions(instructions, voicebank_result)
-
-        # 落盘转换结果（json 全量 + s2pro_text 纯文本）
         out_records: list[dict[str, Any]] = []
-        audio_segment_results: list[AudioSegmentResult] = []
-
         for r in results:
-            # 纯文本（人工核验用）
             txt_path = audio_dir / f"{r.segment_id}.s2pro.txt"
             txt_path.write_text(
                 f"# instruction: {r.instruction}\n"
@@ -322,32 +337,157 @@ class S2ProTTSAdapter(BaseTTSAdapter):
                 f"{r.s2pro_text}\n",
                 encoding="utf-8",
             )
-
-            # 结构化 json（自动化核验用）
             out_records.append(asdict(r))
-
-            # AudioSegmentResult 占位（success=False：v1 未实际合成）
-            audio_segment_results.append(
-                AudioSegmentResult(
-                    segment_id=r.segment_id,
-                    speaker=r.speaker,
-                    audio_path=None,
-                    success=False,
-                    error=(
-                        "S2Pro v1: convert-only mode, no HTTP call. "
-                        f"s2pro_text saved to {txt_path.name}"
-                    ),
-                )
-            )
-
-        # 汇总 json
         summary_path = audio_dir / "s2pro_render_results.json"
         summary_path.write_text(
             json.dumps(out_records, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
+        # 2. dry_run → 不调 HTTP，返回 v1 行为
+        if dry_run:
+            return [
+                AudioSegmentResult(
+                    segment_id=r.segment_id,
+                    speaker=r.speaker,
+                    audio_path=None,
+                    success=False,
+                    error=f"dry_run mode; s2pro_text saved to {r.segment_id}.s2pro.txt",
+                )
+                for r in results
+            ]
+
+        # 3. 真实 HTTP 调用（并发）
+        workers = max_workers or self.max_workers
+        audio_segment_results: list[AudioSegmentResult] = []
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(self._synthesize_one_via_http, r, audio_dir): r.segment_id
+                for r in results
+            }
+            for future in as_completed(futures):
+                seg_id = futures[future]
+                try:
+                    audio_segment_results.append(future.result())
+                except Exception as err:  # noqa: BLE001
+                    audio_segment_results.append(
+                        AudioSegmentResult(
+                            segment_id=seg_id,
+                            speaker="",
+                            audio_path=None,
+                            success=False,
+                            error=f"{type(err).__name__}: {err}",
+                        )
+                    )
+
+        # 按原 segment 顺序排序（as_completed 顺序乱）
+        order = {r.segment_id: i for i, r in enumerate(results)}
+        audio_segment_results.sort(key=lambda ar: order.get(ar.segment_id, 1 << 30))
         return audio_segment_results
+
+    def _synthesize_one_via_http(
+        self,
+        render: S2ProRenderResult,
+        audio_dir: Path,
+    ) -> AudioSegmentResult:
+        """单段 HTTP 合成（线程池里跑）。
+
+        * ``render.enable_reference_audio=True`` 且 wav 存在 → multipart 上传
+        * 否则只传 text + instruction（走模型默认音色路径）
+        """
+        out_path = audio_dir / f"{render.segment_id}.wav"
+
+        data: dict[str, str] = {
+            "text": render.s2pro_text,
+            "instruction": render.instruction,
+            "temperature": str(render.params.get("temperature", self.temperature)),
+            "top_p": str(render.params.get("top_p", self.top_p)),
+            "max_new_tokens": str(render.params.get("max_new_tokens", self.max_new_tokens)),
+        }
+
+        # 缓存命中：wav 已存在且非空 → 直接复用，跳过 HTTP
+        if out_path.exists() and out_path.stat().st_size > 0:
+            return AudioSegmentResult(
+                segment_id=render.segment_id,
+                speaker=render.speaker,
+                audio_path=str(out_path),
+                success=True,
+                error="",
+            )
+
+        # 准备 reference_audio（如启用）
+        ref_path_str = render.reference_audio_path
+        ref_wav_to_send: Path | None = None
+        if render.enable_reference_audio and ref_path_str:
+            ref_path = Path(ref_path_str)
+            if ref_path.exists() and ref_path.stat().st_size > 0:
+                ref_wav_to_send = ref_path
+                data["prompt_text"] = render.prompt_text
+                data["enable_reference_audio"] = "true"
+            # else: 文件不存在 → 不传 reference_audio，server 走默认音色路径
+
+        proxies = {"http": None, "https": None} if self.bypass_proxy else None
+        url = f"{self.base_url}/v1/voicegen/generate"
+
+        try:
+            if ref_wav_to_send is not None:
+                with open(ref_wav_to_send, "rb") as f:
+                    files = {"reference_audio": (ref_wav_to_send.name, f, "audio/wav")}
+                    response = requests.post(
+                        url,
+                        data=data,
+                        files=files,
+                        proxies=proxies,
+                        timeout=self.timeout_per_seg,
+                        verify=False,
+                    )
+            else:
+                response = requests.post(
+                    url,
+                    data=data,
+                    proxies=proxies,
+                    timeout=self.timeout_per_seg,
+                    verify=False,
+                )
+        except requests.exceptions.RequestException as err:
+            return AudioSegmentResult(
+                segment_id=render.segment_id,
+                speaker=render.speaker,
+                audio_path=None,
+                success=False,
+                error=f"{type(err).__name__}: {err}",
+            )
+
+        if response.status_code != 200:
+            err_body = response.text[:500] if response.text else ""
+            return AudioSegmentResult(
+                segment_id=render.segment_id,
+                speaker=render.speaker,
+                audio_path=None,
+                success=False,
+                error=f"HTTP {response.status_code}: {err_body}",
+            )
+
+        # 检查响应体是否真为 wav（轻量校验：RIFF header）
+        body = response.content
+        if len(body) < 44 or body[:4] != b"RIFF":
+            return AudioSegmentResult(
+                segment_id=render.segment_id,
+                speaker=render.speaker,
+                audio_path=None,
+                success=False,
+                error=f"invalid wav response (size={len(body)}, header={body[:8]!r})",
+            )
+
+        out_path.write_bytes(body)
+        return AudioSegmentResult(
+            segment_id=render.segment_id,
+            speaker=render.speaker,
+            audio_path=str(out_path),
+            success=True,
+            error="",
+        )
 
     # ─── 内部：reference_audio 路由 ──────────────────────────────────────
 
