@@ -378,3 +378,241 @@ class PipelineResult:
     artifacts: dict[str, str] = field(default_factory=dict)
     error: str = ""
     pipeline_summary: dict[str, Any] = field(default_factory=dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Audio-Oscar 改造新增数据契约
+#
+# 以下三个 dataclass 用于支持借鉴 Audio-Oscar 架构的扩展开发：
+#   - ModelSpecificTTSInstruction：方向1 / 主开发产出。LLM 直接输出模型
+#     特定参数，替代通用 TTSInstruction。
+#   - CriticResult：方向3 / 实习生B 产出。Qwen3-Omni 听音频后的多维度评分。
+#   - SFXEvent：方向4 / 实习生B 产出。段落间音效事件描述。
+#
+# 这三个 dataclass 是**三方协作的统一接口**：主开发、实习生A、实习生B
+# 都从此处导入，不自行定义重复结构。改动这三个 dataclass 必须由主开发
+# 统一协调，避免接口飘移。
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class ModelSpecificTTSInstruction:
+    """
+    模型特定的 TTS 合成指令。
+
+    出现在数据流的（新链路，方向1 启用后）：
+        segments + characters + voicebank → tts_director → ModelSpecificTTSInstruction[]
+
+    定位：**LLM 直接产出的、面向具体 TTS 后端的合成指令**。``parameters``
+    字段是模型特定的字典，结构由 ``src_next/tts/model_configs/<model>.json``
+    描述（例如 CosyVoice3 用 ``instruct_text`` + ``speed``，S2Pro 用
+    ``instruction`` + ``inline_tags``，IndexTTS 用 ``emotion_vector`` 等）。
+    adapter 收到后**直接透传** ``parameters`` 给后端 HTTP 接口，不再做
+    通用字段 → 模型字段的映射，从而消除原 DirectorInstruction → TTSInstruction
+    之间的信息损失。
+
+    本 dataclass 替代原链路的 (DirectorInstruction, TTSInstruction) 二元组，
+    但**不删除**它们——主开发完成 adapter 改造前，老链路继续工作。
+
+    Attributes
+    ----------
+    segment_id : str
+        对应的 segment 编号，与 ``Segment.segment_id`` 一一对应。
+    speaker : str
+        说话人（与 Segment.speaker 一致）。
+    text : str
+        要合成的文本（保留原文，不改写）。
+    model : str
+        选择的 TTS 模型名（必须出现在 ``model_configs/*.json`` 的 ``name`` 字段）。
+        例如 ``"CosyVoice3"`` / ``"S2Pro"`` / ``"IndexTTS2"`` / ``"Qwen3TTS"``。
+    parameters : dict[str, Any]
+        模型特定参数。结构由对应 ``model_configs/<model>.json`` 定义，adapter
+        不解释内部字段，直接透传给 HTTP 接口。
+        示例（CosyVoice3）：
+            ``{"mode": "instruct2", "instruct_text": "...", "speed": 0.9}``
+        示例（S2Pro）：
+            ``{"instruction": "...", "inline_tags_text": "[excited]文本[pause]",
+               "enable_reference_audio": true}``
+    voice_ref : str
+        该 speaker 对应的 voicebank wav 路径。空字符串表示无参考音频
+        （adapter 会按模型默认行为处理：CosyVoice 退化为零样本，
+        S2Pro 用模型默认音色，IndexTTS 报错）。
+    attempt : int
+        合成尝试次数。首次合成 = 1；Critic 修复后重合成 = 2、3 ...。
+        adapter 用此字段决定是否走"保守稳定"参数（attempt >= 2 时
+        降低 temperature / 关闭自由发挥）。Critic 循环依赖此字段判断
+        是否已超过 max_retries。
+    """
+
+    segment_id: str
+    speaker: str
+    text: str
+    model: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+    voice_ref: str = ""
+    attempt: int = 1
+
+
+@dataclass
+class CriticResult:
+    """
+    单段音频的质量评估结果（Qwen3-Omni 听音频后给出）。
+
+    出现在数据流的（方向3 启用后）：
+        audio_segments → critic.evaluate(...) → CriticResult
+        → if needs_repair: tts_repair.repair(...) → 重合成 → 再评估
+
+    定位：**闭环质量评估**。当前链路 TTS 合成后直接输出，没有质量保障。
+    本 dataclass 是闭环的核心数据契约：Critic 给出多维评分，Repair Agent
+    根据低分维度调整 ModelSpecificTTSInstruction.parameters 后重合成。
+
+    5 个维度针对有声书场景定制（参考 Audio-Oscar 的 quality/alignment/
+    aesthetics 三维，扩展为更细的 5 维）：
+
+    Attributes
+    ----------
+    segment_id : str
+        对应的 segment 编号。
+    quality : float
+        音质（清晰度、有无杂音 / 截断 / 失真），0.0~1.0。
+    emotion_alignment : float
+        情感匹配度（音频实际情感 vs ModelSpecificTTSInstruction.parameters
+        中期望的情感），0.0~1.0。
+    character_consistency : float
+        角色一致性（声音特征是否符合 CharacterProfile 中的设定，
+        尤其 gender / age_style / personality），0.0~1.0。
+    rhythm_naturalness : float
+        节奏自然度（语速、停顿、语调是否自然），0.0~1.0。
+    intelligibility : float
+        可懂度（文本内容是否清晰可辨、有无吞字 / 含糊），0.0~1.0。
+    overall : float
+        综合分（5 维平均），0.0~1.0。由 ``from_json`` 自动计算。
+    suggestions : str
+        LLM 给出的修复建议（中文自由文本）。例如 "情感表达偏弱，
+        建议增强悲伤语气，降低语速至 0.8"。Repair Agent 会读这个字段。
+    attempt : int
+        本次评估对应的合成 attempt（首次=1，第一次修复后重评=2 ...）。
+        用于跟踪修复过程。
+    """
+
+    segment_id: str
+    quality: float
+    emotion_alignment: float
+    character_consistency: float
+    rhythm_naturalness: float
+    intelligibility: float
+    overall: float
+    suggestions: str = ""
+    attempt: int = 1
+
+    def needs_repair(self, threshold: float = 0.7, overall_floor: float = 0.75) -> bool:
+        """
+        判断该段是否需要进入 Repair 流程。
+
+        触发修复的两种条件（任一满足即触发）：
+        1. 任一维度分 < ``threshold``（局部短板）
+        2. overall < ``overall_floor``（整体偏低）
+
+        Parameters
+        ----------
+        threshold : float
+            单维度下限。默认 0.7，对应"良好"线。
+        overall_floor : float
+            overall 下限。默认 0.75，比 threshold 略高以容忍单维波动。
+        """
+        dims = (
+            self.quality,
+            self.emotion_alignment,
+            self.character_consistency,
+            self.rhythm_naturalness,
+            self.intelligibility,
+        )
+        return min(dims) < threshold or self.overall < overall_floor
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any], attempt: int = 1) -> "CriticResult":
+        """
+        从 LLM 返回的 JSON dict 构造 CriticResult。
+
+        自动做：
+        - 5 维分数 clamp 到 [0.0, 1.0]
+        - 缺失维度补 0.5（中性分）
+        - overall 自动计算（5 维平均）
+        - segment_id 必填，缺失抛 KeyError
+        """
+        dims = [
+            "quality",
+            "emotion_alignment",
+            "character_consistency",
+            "rhythm_naturalness",
+            "intelligibility",
+        ]
+        scores: dict[str, float] = {}
+        for k in dims:
+            try:
+                v = float(data.get(k, 0.5))
+            except (TypeError, ValueError):
+                v = 0.5
+            scores[k] = max(0.0, min(1.0, v))
+        overall = sum(scores.values()) / len(scores)
+        return cls(
+            segment_id=data["segment_id"],
+            quality=scores["quality"],
+            emotion_alignment=scores["emotion_alignment"],
+            character_consistency=scores["character_consistency"],
+            rhythm_naturalness=scores["rhythm_naturalness"],
+            intelligibility=scores["intelligibility"],
+            overall=overall,
+            suggestions=str(data.get("suggestions", "")),
+            attempt=int(data.get("attempt", attempt)),
+        )
+
+
+@dataclass
+class SFXEvent:
+    """
+    段落间音效事件（一期：仅段间插入，不与语音叠加）。
+
+    出现在数据流的（方向4 启用后）：
+        segments + characters → sfx_planner.plan(...) → SFXEvent[]
+        → tta_adapter.generate(...) → SFXEvent.audio_path 填充
+        → audio_merger 在段间插入音效
+
+    定位：**环境音效层**。当前 audio_merger 只在段间插静默，沉浸感不足。
+    SFXEvent 描述"在某段之后插入什么音效"，audio_merger 据此替换静默。
+
+    一期边界（本 dataclass 当前只支持）：
+    - ``position`` 取值 ``"after_seg_xxx"`` 或 ``"before_seg_xxx"``
+    - 音效与语音**不叠加**（用拼接替代静默）
+    - 每个 position 至多一个 SFXEvent
+
+    二期扩展（dataclass 已预留字段，但 audio_merger 一期不实现）：
+    - ``position`` 支持 ``"in_seg_xxx_at_<seconds>"`` 精确时间戳
+    - 音效与语音叠加（多轨混合，需 pydub / ffmpeg）
+
+    Attributes
+    ----------
+    position : str
+        插入位置。一期取值：
+        - ``"after_seg_003"``：在 seg_003 之后插入
+        - ``"before_seg_001"``：在 seg_001 之前插入（用于片头环境音）
+    description : str
+        音效的自然语言描述。**建议英文**（TTA 模型对英文描述支持更好），
+        如 ``"Gentle rain falling continuously with distant thunder"``。
+        中文描述也可，但效果可能劣化。
+    model : str
+        选择的 TTA 模型名。当前黄区服务器仅 ``"MOSSSoundEffect"`` 可用。
+        ``model_configs/`` 中描述该模型的参数 schema。
+    parameters : dict[str, Any]
+        模型特定参数（直接透传给 TTA adapter）。结构由
+        ``tta/model_configs/<model>.json`` 定义。
+    duration : float
+        期望音效时长（秒）。adapter 据此裁剪 / 循环生成的音频。
+    audio_path : str
+        生成后的音效 wav 路径。未生成时为空字符串。
+    """
+
+    position: str
+    description: str
+    model: str = "MOSSSoundEffect"
+    parameters: dict[str, Any] = field(default_factory=dict)
+    duration: float = 3.0
+    audio_path: str = ""
