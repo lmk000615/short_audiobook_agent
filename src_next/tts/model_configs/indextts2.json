@@ -1,0 +1,83 @@
+{
+  "name": "IndexTTS2",
+  "backend": "indextts_http",
+  "short_description": "8 维 emotion_vector 情感量化 + 情感与音色解耦",
+  "description": "Bilibili IndexTTS-2（Full）。核心特色是 8 维 emotion_vector（happy / angry / sad / afraid / disgusted / melancholic / surprised / calm），可对情感做精确量化控制，且情感与音色解耦——可以用 A 角色的音色 + B 情感的音频独立组合（emotion_audio_base64 与 reference_audio_base64 分离）。同时支持拼音控制（[拼音] 标记精确发音）、时长控制（max_mel_tokens / max_text_tokens）、多模态情感输入（向量 / 音频 / 文本三种方式）。zero-shot 克隆保真度高，对 elderly / child / specific-role 角色表现力强。22050 Hz 输出。",
+  "strengths": [
+    "8 维 emotion_vector 情感量化控制（精确数值，可微调）",
+    "情感与音色解耦（A 音色 + B 情感自由组合）",
+    "情感输入三选一：emotion_vector / emotion_audio / emotion_text",
+    "拼音控制（[DE5] / [DI3] 等精确发音标注）",
+    "时长精确控制（max_mel_tokens）",
+    "zero-shot 克隆保真度高，对老年 / 儿童角色表现力强"
+  ],
+  "weaknesses": [
+    "emotion_vector 总和不超过 0.8（模型自动缩放），多情绪混合有学习曲线",
+    "22050 Hz 输出（比 S2Pro / CosyVoice 低）",
+    "无内联标签，无法做位置级 [pause] / [emphasis] 控制",
+    "采样参数多（temperature / top_p / top_k / num_beams / repetition_penalty），调参复杂"
+  ],
+  "best_for": [
+    "需要精确情感量化的角色（如悲伤强度 0.8 vs 0.3 的对比）",
+    "elderly / child / specific-age 角色的稳定克隆",
+    "情感与音色需要错位的表演（如「冷静的声音说愤怒的话」）",
+    "需要中文拼音精确发音纠正的段落"
+  ],
+  "avoid_for": [
+    "需要位置级韵律控制（[pause] / [emphasis]）",
+    "高保真 44100 Hz 输出场景",
+    "LLM 不熟悉 8 维向量语义（学习成本高）"
+  ],
+  "voice_input": "required_reference",
+  "sampling_rate": 22050,
+  "output_format": "wav",
+  "parameters": {
+    "emotion_vector": {
+      "type": "list",
+      "description": "8 维情绪向量 [happy, angry, sad, afraid, disgusted, melancholic, surprised, calm]，每维 0.0-1.0。总和不应超过 0.8（超过模型自动缩放）。常用预设：开心=[0.8,0,0,0,0,0,0,0.2]、生气=[0,0.8,0,0,0,0,0,0.2]、悲伤=[0,0,0.8,0,0,0.1,0,0.1]、恐惧=[0,0,0,0.8,0,0,0,0.2]、平静=[0,0,0,0,0,0,0,1.0]。LLM 应根据 segment 语义选最贴切的 1-2 个维度加权。",
+      "default": [0, 0, 0, 0, 0, 0, 0, 1.0],
+      "length": 8,
+      "required": false
+    },
+    "emotion_alpha": {
+      "type": "float",
+      "description": "情感强度系数 0.0-1.0。1.0=100% 情感，0.6 推荐值（更自然），过高可能发音不清晰。",
+      "default": 0.6,
+      "min": 0.0,
+      "max": 1.0,
+      "required": false
+    },
+    "emotion_text": {
+      "type": "string",
+      "description": "情绪文本描述（自动生成 emotion_vector 的替代方式）。如「你吓死我了！你是鬼吗？」。提供时 emotion_vector 字段会被服务器自动推导，二者提供其一即可。",
+      "default": "",
+      "required": false
+    },
+    "use_random": {
+      "type": "bool",
+      "description": "是否启用随机性。true 增加变化但降低克隆保真度。多次合成同段需要稳定时设 false。",
+      "default": false,
+      "required": false
+    },
+    "temperature": {
+      "type": "float",
+      "description": "采样温度 0-1。0.7=稳定高质量，0.8=默认，0.9=多样。Critic 修复阶段（attempt>=2）推荐降到 0.6。",
+      "default": 0.8,
+      "min": 0.0,
+      "max": 1.0,
+      "required": false
+    },
+    "top_p": {
+      "type": "float",
+      "description": "Nucleus 采样 cutoff 0-1。",
+      "default": 0.8,
+      "required": false
+    },
+    "max_mel_tokens": {
+      "type": "int",
+      "description": "最大生成 mel token 数，控制音频时长上限。短句 500，标准 1500，长段 3000。",
+      "default": 1500,
+      "required": false
+    }
+  }
+}

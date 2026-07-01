@@ -1,0 +1,74 @@
+{
+  "name": "S2Pro",
+  "backend": "s2pro_http",
+  "short_description": "15000+ 内联标签 + 音色克隆，细粒度表演王者",
+  "description": "Fish Audio S2-Pro 4B（Dual-AR 架构）。核心特色是 15000+ 内联标签库，可在文本任意位置嵌入 [excited] / [sad] / [angry] / [surprised] / [whisper] / [pause] / [emphasis] / [sigh] / [laughing] / [singing] 等标签实现位置级表演控制，且支持自由文本标签（如 [speak slowly] / [whisper in small voice] / [professional broadcast tone]）。同时支持全局 instruction（中文自由文本或标签，作用于整段）和 reference_audio 音色克隆（10-30 秒参考音频 + 精确转录文本，8010 端口扩展支持）。44100 Hz 高保真输出，80+ 语言。这是当前唯一支持「在文本里逐句切换情绪」的后端，适合多情绪对白、复杂表演场景。",
+  "strengths": [
+    "15000+ 内联标签库，细粒度表演控制（位置级，不是段级）",
+    "支持自由文本标签（[whisper in small voice] 等自然语言描述）",
+    "音色克隆（reference_audio 三件套，8010 端口）",
+    "44100 Hz 高保真，80+ 语言",
+    "全局 instruction + 内联标签可叠加"
+  ],
+  "weaknesses": [
+    "标签语法有学习曲线，LLM 需要熟悉常用标签",
+    "reference_audio 每次调用都重新编码（无 session 缓存），多段合成较慢",
+    "对平淡叙述无显著优势（不如 CosyVoice 稳定）",
+    "标签滥用会让音频不自然（需要 LLM 节制使用）"
+  ],
+  "best_for": [
+    "多情绪对白（一句话多个情绪切换）",
+    "需要 [pause] / [emphasis] 等韵律控制",
+    "表演型角色（活泼 / 狡黠 / 愤怒 / 惊讶）",
+    "需要笑声 / 叹气 / 耳语等非语言元素"
+  ],
+  "avoid_for": [
+    "纯平稳叙述（CosyVoice 更稳）",
+    "需要 emotion_vector 精确量化的场景（用 IndexTTS2）"
+  ],
+  "voice_input": "optional_reference",
+  "sampling_rate": 44100,
+  "output_format": "wav",
+  "parameters": {
+    "instruction": {
+      "type": "string",
+      "description": "全局风格指令，作用于整段音频。可以是单个标签（如 [excited] / [whisper]）或自然语言描述（如「温柔亲切的女声」/「[professional broadcast tone]」）。与 inline_tags_text 互补：instruction 设整体基调，inline_tags_text 做位置级控制。",
+      "default": "",
+      "required": false
+    },
+    "inline_tags_text": {
+      "type": "string",
+      "description": "把内联标签直接嵌入文本的版本。若提供，adapter 用此字段替代原文 text 合成。如原文「望着远方叹了口气」可增强为 '[sad][speak slowly]望着远方[pause][sigh]叹了口气'。常用标签：情感([excited]/[angry]/[sad]/[surprised]/[whisper]/[screaming])、韵律([pause]/[short pause]/[emphasis]/[sigh])、声音效果([laughing]/[chuckle]/[inhale]/[exhale]/[clearing throat]/[panting])、音量([loud]/[quiet]/[volume up]/[volume down])、自由文本([speak slowly]/[whisper in small voice]/[professional broadcast tone])。LLM 应节制使用，每句 1-3 个标签即可，滥用会让音频不自然。",
+      "default": "",
+      "required": false
+    },
+    "enable_reference_audio": {
+      "type": "bool",
+      "description": "是否启用音色克隆。true 时 adapter 从 voicebank_result 取 speaker 对应的 wav 作 reference_audio。false 时用模型默认音色（每次调用结果不稳定，不推荐对白用）。旁白 narrator 可设 false 用默认音色。",
+      "default": true,
+      "required": false
+    },
+    "temperature": {
+      "type": "float",
+      "description": "采样温度，0.7=稳定输出（最小变化），1.0=标准平衡，1.2=创意输出（最大变化）。对白推荐 0.8-1.0，旁白推荐 0.7-0.9。",
+      "default": 1.0,
+      "min": 0.1,
+      "max": 2.0,
+      "required": false
+    },
+    "top_p": {
+      "type": "float",
+      "description": "Nucleus 采样 cutoff。0.5=保守，0.6=标准，0.9=多样。",
+      "default": 0.6,
+      "min": 0.0,
+      "max": 1.0,
+      "required": false
+    },
+    "max_new_tokens": {
+      "type": "int",
+      "description": "最大生成 token 数，控制音频长度上限。短句 1024，标准 4096，长段 8192。",
+      "default": 4096,
+      "required": false
+    }
+  }
+}

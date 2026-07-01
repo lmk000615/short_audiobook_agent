@@ -1,0 +1,51 @@
+{
+  "name": "CosyVoice3",
+  "backend": "cosyvoice_http",
+  "short_description": "自然语言指令控制方言/语速/情绪，9 语言 18 方言",
+  "description": "Fun-CosyVoice3-0.5B。核心特色是 instruct 模式：通过中文自由文本指令控制输出风格（如「用生气的语气说」「请用广东话表达」「请用尽可能快地语速说一句话」），无需在文本里嵌标签。同时支持 cross_lingual 模式（用 [breath] / [拼音] 等控制符直接嵌入文本做细粒度控制）和 zero_shot 模式（保留参考音频音色）。覆盖 9 种主流语言和 18+ 种中文方言。instruct 模式硬性约束：prompt_text 必须以 'You are a helpful assistant. ' 开头并以 '<|endofprompt|>' 结尾，adapter 内部会自动拼装，LLM 只需给出指令内容。适合旁白、新闻播报、需要方言或情绪控制的稳定叙述场景。",
+  "strengths": [
+    "自然语言指令控制，LLM 容易产出",
+    "9 语言 + 18 中文方言覆盖广",
+    "instruct 模式输出稳定，适合长段叙述",
+    "零样本克隆保留参考音色"
+  ],
+  "weaknesses": [
+    "情感粒度比 S2Pro 内联标签粗（只能整段一个语气）",
+    "instruct 前缀约束硬，缺失会让指令被当文本念出来",
+    "无独立语速/音量数值参数，只能靠自然语言描述"
+  ],
+  "best_for": [
+    "旁白 / narrator（平稳叙述强）",
+    "新闻播报风格",
+    "需要方言切换的段落",
+    "情绪整体一致的长段"
+  ],
+  "avoid_for": [
+    "需要细粒度情感切换（一句话多个情绪）",
+    "需要 [pause] [emphasis] 等位置级控制"
+  ],
+  "voice_input": "required_reference",
+  "sampling_rate": 24000,
+  "output_format": "wav",
+  "parameters": {
+    "mode": {
+      "type": "string",
+      "description": "生成模式：instruct=指令控制风格（推荐默认）；cross_lingual=控制符嵌入文本；zero_shot=保留参考音色不加控制",
+      "default": "instruct",
+      "enum": ["instruct", "cross_lingual", "zero_shot"],
+      "required": false
+    },
+    "instruct_text": {
+      "type": "string",
+      "description": "中文自由文本指令，控制整段输出风格。如「用生气的语气说」「请用广东话表达」「请用缓慢的语速说」「用开心的语气说」。instruct 模式下必填。adapter 会自动拼成 'You are a helpful assistant. <instruct_text>。<|endofprompt|>' 格式，LLM 不需要自己加前缀和分隔符。",
+      "default": "",
+      "required": false
+    },
+    "cross_lingual_markers": {
+      "type": "string",
+      "description": "cross_lingual 模式下嵌入文本的控制符序列，如 '[breath]因为你那一辈人[breath]在乡里面住要习惯一点'。支持的标记：[breath]（呼吸）、[拼音]（控制读音）、[cmutn]（英文音素）。cross_lingual 模式下用此字段替代原文 text。",
+      "default": "",
+      "required": false
+    }
+  }
+}
