@@ -158,24 +158,25 @@ class ModelSpecificTTSInstruction:
 | 修改 | `src_next/tts/indextts_http.py`（同上）|
 | 新增 | `tests/test_adapters_model_specific.py`（mock HTTP，验证透传）|
 
-### C3: profile + registry + pipeline 集成
+### C3: 全局 TTS registry + pipeline 集成
 
 | 操作 | 文件 |
 |---|---|
-| 修改 | `src_next/profiles/yellow_qwen3http_cosyvoicehttp.yaml`（tts 块加 available_backends + backends_config）|
-| 修改 | `src_next/profiles/yellow_qwen3http_indexttshttp.yaml`（同上）|
-| 修改 | `src_next/profiles/yellow_gemma_qwen_s2pro.yaml`（同上）|
-| 修改 | `src_next/tts/registry.py`（加 `create_adapter_for_model(model_name)` + lazy cache）|
-| 修改 | `src_next/core/audiobook_pipeline.py`（stage 7 切换 + stage 8 按 model 分组）|
-| 修改 | `src_next/utils/yaml_utils.py`（profile 校验识别新 schema）|
+| 新增 | `src_next/tts/backends.yaml`（全局 TTS backend 注册表，集中所有 TTS 服务地址）|
+| 修改 | `src_next/tts/registry.py`（加 `create_adapter_for_backend(backend, **cfg)` + lazy cache）|
+| 修改 | `src_next/core/audiobook_pipeline.py`（stage 7 切换 + stage 8 按 model 分组 + 加载 backends.yaml）|
+| 修改 | `src_next/utils/yaml_utils.py`（识别 `pipeline.use_tts_director` 开关，开关 true 时跳过 profile.tts 字段校验）|
 | 新增 | `tests/test_pipeline_use_tts_director_switch.py`（mock 链路 smoke）|
 | 新增 | `tests/test_multi_backend_synthesis.py`（多 adapter 分组调度）|
+| 新增 | `tests/test_backends_yaml_loader.py`（backends.yaml 加载 + 校验）|
+
+**现有 3 个 yellow_*.yaml 完全不动**——它们保持原样作为老链路 profile。新链路通过 CLI flag `--use-tts-director` 或在任意 yellow_*.yaml 加一行 `pipeline.use_tts_director: true` 启用，启用后 pipeline 自动加载 `backends.yaml`，忽略 profile.tts 的 backend / base_url / extra_args（只保留 `output_subdir`）。
 
 ### C4: docs sync
 
 | 操作 | 文件 |
 |---|---|
-| 修改 | `src_next_主链路运行及核心模块说明.md`（stage 编号 + 新 profile schema + LLM 选 model 说明）|
+| 修改 | `src_next_主链路运行及核心模块说明.md`（stage 编号 + backends.yaml 说明 + LLM 选 model 说明）|
 | 修改 | `src_next_总体架构说明.md`（架构图说明）|
 | 修改 | `CLAUDE.md` §4 表格 + §6 开关说明 + §11 维护表加一行 |
 | 修改 | `README.md` 同步 |
@@ -187,26 +188,71 @@ class ModelSpecificTTSInstruction:
 
 ## 7. Key Design Decisions
 
-### 7.1 Profile 双 schema 兼容
+### 7.1 Profile 不变 + 全局 TTS registry
+
+**核心思路**：TTS 服务地址集中维护在 1 处（`backends.yaml`），不在 N 个 profile 里重复。Profile yaml 完全不动。
+
+**`src_next/tts/backends.yaml` 结构**：
 
 ```yaml
-# 老链路（use_tts_director: false）— 不变
-tts:
-  backend: cosyvoice_http
-  base_url: "http://10.50.121.102:8005"
-  output_subdir: audio_segments
+# 全局 TTS backend 注册表
+# use_tts_director=true 时由 pipeline 自动加载
+# 加新 TTS 服务只改本文件 + 加 model_configs/<model>.json
 
-# 新链路（use_tts_director: true）— 新 schema
-tts:
-  available_backends: [cosyvoice_http, s2pro_http, indextts_http]
-  backends_config:
-    cosyvoice_http: {base_url: "http://10.50.121.102:8005"}
-    s2pro_http: {base_url: "http://10.50.121.102:8010"}
-    indextts_http: {base_url: "http://10.50.121.102:8009"}
-  output_subdir: audio_segments
+# 启用的 backend 列表（LLM 只能从这里选）
+# 必须是下面 backends 字典里的 key 子集
+enabled_backends:
+  - cosyvoice_http
+  - s2pro_http
+  - indextts_http
+
+# 各 backend 的服务地址 + extra_args
+backends:
+  cosyvoice_http:
+    base_url: "http://10.50.121.102:8005"
+    extra_args:
+      max_workers: 4
+      timeout: 300
+
+  s2pro_http:
+    base_url: "http://10.50.121.102:8010"   # 8010 端口（含音色克隆）
+    extra_args:
+      max_workers: 4
+      enable_reference_audio: true
+      timeout: 300
+
+  indextts_http:
+    base_url: "http://10.50.121.102:8009"
+    extra_args:
+      max_workers: 4
+      timeout: 300
+
+# Fallback 模型（LLM 没覆盖的 segment 用这个）
+# 必须是某个 model_configs/*.json 的 name 字段
+# 且该 model_config 的 backend 必须在 enabled_backends 里
+default_model: CosyVoice3
 ```
 
-`yaml_utils.discover_profiles()` 根据 `pipeline.use_tts_director` 校验对应 schema。两种 schema 不能混用，混用报错。
+**启用方式**（二选一）：
+
+1. **CLI flag**（推荐，临时启用）：
+   ```bash
+   python -m src_next.core.audiobook_pipeline \
+       --input input/sample_story_01.txt \
+       --profile src_next/profiles/yellow_qwen3http_cosyvoicehttp.yaml \
+       --use-tts-director
+   ```
+
+2. **Profile yaml 内置**（持久启用，WebUI 友好）：
+   ```yaml
+   # 在任意 yellow_*.yaml 加一行
+   pipeline:
+     use_tts_director: true
+   ```
+
+**生效逻辑**：
+- `use_tts_director=true` 时，pipeline 加载 `backends.yaml`，**忽略** profile.tts 的 `backend` / `base_url` / `extra_args`，**保留** profile.tts.`output_subdir`（控制 wav 落盘子目录）
+- `use_tts_director=false` 时（默认），pipeline 完全用 profile.tts，不读 `backends.yaml`
 
 ### 7.2 Adapter 双接口并存（方案 A）
 
@@ -237,11 +283,12 @@ for inst in tts_instructions:
     grouped[inst.model].append(inst)
 
 # 每组 lazy 创建 adapter 并 synthesize
+backends_yaml = load_backends_yaml()  # 加载 src_next/tts/backends.yaml
 audio_segments_by_id = {}
 for model_name, group in grouped.items():
-    backend = model_config_loader.get_backend(model_name)
-    cfg = profile_dict["tts"]["backends_config"][backend]
-    adapter = create_tts_adapter(backend, **cfg)  # registry 加 lazy cache
+    backend = model_config_loader.get_backend(model_name)  # model.name → backend key
+    cfg = backends_yaml["backends"][backend]                # 从 backends.yaml 取服务地址
+    adapter = create_adapter_for_backend(backend, **cfg)    # registry 加 lazy cache
     seg_results = adapter.synthesize(group, voicebank_result, str(output_dir))
     for r in seg_results:
         audio_segments_by_id[r.segment_id] = r
@@ -255,8 +302,8 @@ audio_segments = [audio_segments_by_id[inst.segment_id] for inst in tts_instruct
 LLM 没覆盖的 segment → `_fallback_instruction(segment, default_model_name, default_params)`：
 
 - `default_model_name` 推导顺序：
-  1. `profile.pipeline.tts_director_default_model`（可选，用户显式指定，如 `"CosyVoice3"`）
-  2. 否则取 `profile.tts.available_backends[0]` 对应的 `model_config.name`（如 `available_backends[0]="cosyvoice_http"` → 查 cosyvoice3.json → `"CosyVoice3"`）
+  1. `backends.yaml:default_model`（全局显式指定，如 `"CosyVoice3"`）
+  2. 否则取 `backends.yaml:enabled_backends[0]` 对应的 `model_config.name`（如 `enabled_backends[0]="cosyvoice_http"` → 查 cosyvoice3.json → `"CosyVoice3"`）
 - `parameters` = 该 model_config 里所有字段的 `default` 值组成的 dict
 - `voice_ref` = `voicebank_result.speaker_to_voice.get(segment.speaker, "")`
 - `attempt` = 1（方向1 不涉及 Critic 修复）
@@ -279,7 +326,9 @@ LLM 没覆盖的 segment → `_fallback_instruction(segment, default_model_name,
 | 同 speaker 多 model | 后处理统一（用首次出现的 model）+ warning |
 | adapter HTTP 失败 | 单段失败不阻断（沿用老链路行为），failed segment 标 `success=False` |
 | voice_ref 缺失 | CosyVoice/IndexTTS 走模型默认音色 + warning；S2Pro 默认 `enable_reference_audio=false` |
-| profile schema 混用（同时有 backend 和 available_backends）| yaml_utils 校验时报错，列出冲突字段 |
+| `backends.yaml` 不存在 / 解析失败 / 字段缺失 | 启动时立即报错（fail-fast），不进入 pipeline |
+| `backends.yaml:default_model` 不在 enabled_backends 对应的 model_configs 里 | 启动时立即报错（fail-fast）|
+| `backends.yaml:enabled_backends` 引用了 `backends` 字典里不存在的 key | 启动时立即报错（fail-fast）|
 | model_config 文件解析失败 | model_config_loader 启动时立即报错（fail-fast），不进入 pipeline |
 | 跨开关 reuse 格式不匹配（如老链路跑过的 tts_instructions.json 含 TTSInstruction，但本次 use_tts_director=true）| reuse 检测时校验 JSON 首元素是否含 `model` 字段；不匹配则 warning + 忽略 reuse，重新跑 stage 7 |
 
