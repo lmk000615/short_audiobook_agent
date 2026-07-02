@@ -16,6 +16,7 @@ from src_next.core.data_models import (
     VoicebankResult,
 )
 from src_next.tts.cosyvoice_http import CosyVoiceHTTPAdapter
+from src_next.tts.s2pro_adapter import S2ProTTSAdapter
 
 
 @pytest.fixture
@@ -126,3 +127,84 @@ def test_cosyvoice_model_specific_passes_through_parameters(
         assert any("平静" in str(v) for v in request_data.values()), (
             f"instruct_text '用平静的语气说' 未体现在 HTTP 请求：{request_data}"
         )
+
+
+# ── S2Pro adapter 双接口测试（任务 7） ─────────────────────────────
+
+
+@pytest.fixture
+def s2pro_adapter():
+    return S2ProTTSAdapter(
+        base_url="http://mock:8010",
+        output_subdir="audio_segments",
+        extra_args={"max_workers": 1, "timeout_per_seg": 10, "enable_reference_audio": True},
+    )
+
+
+@pytest.fixture
+def s2pro_model_specific_instructions() -> list[ModelSpecificTTSInstruction]:
+    return [
+        ModelSpecificTTSInstruction(
+            segment_id="seg_001",
+            speaker="小松鼠",
+            text="太棒了！",
+            model="S2Pro",
+            parameters={
+                "instruction": "[excited]",
+                "inline_tags_text": "[excited]太棒了！",
+                "enable_reference_audio": True,
+                "temperature": 0.9,
+                "top_p": 0.7,
+            },
+            voice_ref="/tmp/voicebank/xiaosongshu.wav",
+            attempt=1,
+        ),
+    ]
+
+
+def test_s2pro_synthesize_routes_to_model_specific(
+    s2pro_adapter, s2pro_model_specific_instructions, voicebank_result, tmp_path
+):
+    """当 instructions[0] 是 ModelSpecificTTSInstruction 时走新路径。"""
+    with patch.object(
+        s2pro_adapter, "_synthesize_model_specific",
+        return_value=[MagicMock(spec=AudioSegmentResult)],
+    ) as mock_ms, patch.object(
+        s2pro_adapter, "_synthesize_legacy",
+        return_value=[MagicMock(spec=AudioSegmentResult)],
+    ) as mock_legacy:
+        s2pro_adapter.synthesize(
+            s2pro_model_specific_instructions, voicebank_result, str(tmp_path), dry_run=True
+        )
+        mock_ms.assert_called_once()
+        mock_legacy.assert_not_called()
+
+
+def test_s2pro_model_specific_passes_through_inline_tags(
+    s2pro_adapter, s2pro_model_specific_instructions, voicebank_result, tmp_path
+):
+    """当 inline_tags_text 提供，它覆盖 instruction.text 作为 HTTP 的 `text` 字段。
+    instruction 字段原样透传（不从 emotion 映射）。"""
+    captured: dict = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return MagicMock(content=b"RIFF" + b"\x00" * 40 + b"wav", status_code=200)
+
+    with patch("src_next.tts.s2pro_adapter.requests.post", side_effect=fake_post):
+        s2pro_adapter._synthesize_model_specific(
+            s2pro_model_specific_instructions, voicebank_result, str(tmp_path), dry_run=False
+        )
+
+    assert captured.get("url"), "HTTP post 未被调用"
+    # S2Pro 8010 用 multipart/form-data，data 是 form dict
+    data = captured.get("data") or {}
+    text_value = data.get("text", "")
+    assert "[excited]" in text_value, (
+        f"inline_tags_text 未透传：text={text_value!r}"
+    )
+    # instruction 字段全局透传（LLM 已经直接给出 [excited]，不做 emotion→tag mapping）
+    assert data.get("instruction") == "[excited]", (
+        f"instruction 字段未透传：{data}"
+    )

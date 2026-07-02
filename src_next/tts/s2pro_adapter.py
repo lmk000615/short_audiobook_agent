@@ -63,6 +63,7 @@ S2ProRenderResult 直接对应 S2Pro API 的 multipart/form-data 字段：
 from __future__ import annotations
 
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -72,11 +73,17 @@ import requests
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
 
-from src_next.core.data_models import AudioSegmentResult, TTSInstruction, VoicebankResult
+from src_next.core.data_models import (
+    AudioSegmentResult,
+    ModelSpecificTTSInstruction,
+    TTSInstruction,
+    VoicebankResult,
+)
 
 from .base import BaseTTSAdapter, TTSError
 
 urllib3.disable_warnings(InsecureRequestWarning)
+logger = logging.getLogger(__name__)
 
 
 # ─── 默认值 ──────────────────────────────────────────────────────────────────
@@ -294,9 +301,31 @@ class S2ProTTSAdapter(BaseTTSAdapter):
             debug_tags=debug_tags,
         )
 
-    # ─── BaseTTSAdapter 实现（v2：真实 HTTP 调用 + reference_audio 路由） ────
+    # ─── 入口：synthesize 分发器（双接口并存，方案 A） ─────────────────
+    # 老链路（use_tts_director: false）传入 TTSInstruction，走 _synthesize_legacy
+    # 新链路（use_tts_director: true）传入 ModelSpecificTTSInstruction，走 _synthesize_model_specific
 
     def synthesize(
+        self,
+        instructions: list[Any],
+        voicebank_result: VoicebankResult,
+        output_dir: str,
+        **kwargs: Any,
+    ) -> list[AudioSegmentResult]:
+        """入口。按 instruction 类型分流到新/老路径。"""
+        if not instructions:
+            return []
+        if isinstance(instructions[0], ModelSpecificTTSInstruction):
+            return self._synthesize_model_specific(
+                instructions, voicebank_result, output_dir, **kwargs
+            )
+        return self._synthesize_legacy(
+            instructions, voicebank_result, output_dir, **kwargs
+        )
+
+    # ─── BaseTTSAdapter 实现（v2：真实 HTTP 调用 + reference_audio 路由） ────
+
+    def _synthesize_legacy(
         self,
         instructions: list[TTSInstruction],
         voicebank_result: VoicebankResult,
@@ -386,6 +415,145 @@ class S2ProTTSAdapter(BaseTTSAdapter):
         order = {r.segment_id: i for i, r in enumerate(results)}
         audio_segment_results.sort(key=lambda ar: order.get(ar.segment_id, 1 << 30))
         return audio_segment_results
+
+    # ─── 新链路：ModelSpecificTTSInstruction 纯透传合成 ──────────────
+
+    def _synthesize_model_specific(
+        self,
+        instructions: list[ModelSpecificTTSInstruction],
+        voicebank_result: VoicebankResult,
+        output_dir: str,
+        *,
+        dry_run: bool = False,
+        limit: int = 0,
+        **_kwargs: Any,
+    ) -> list[AudioSegmentResult]:
+        """ModelSpecificTTSInstruction 的纯透传合成（新链路 use_tts_director: true）。
+
+        与 ``_synthesize_legacy`` 的区别：
+            - 不调 ``convert_instructions`` / ``_emotion_to_tag`` 等 mapping
+              （LLM 已经直接给出 inline_tags_text + instruction + 参数）
+            - ``instruction.parameters.inline_tags_text`` 优先作 HTTP 的 ``text``
+              字段（带标签版），缺省时回退到 ``instruction.text``
+
+        S2Pro 8010 端口用 multipart/form-data：
+            - text / instruction / temperature / top_p / max_new_tokens 作 form 字段
+            - reference_audio + prompt_text 在 enable_reference_audio=true 且
+              voice_ref 文件存在时附加
+
+        单段失败不阻断其他段（沿用老路径行为）。
+        """
+        audio_dir = Path(output_dir).expanduser() / self.output_subdir
+        audio_dir.mkdir(parents=True, exist_ok=True)
+
+        speaker_to_voice = (
+            voicebank_result.speaker_to_voice if voicebank_result else {}
+        ) or {}
+
+        n = len(instructions) if not limit or limit <= 0 else min(limit, len(instructions))
+        results: list[AudioSegmentResult] = []
+
+        for idx, inst in enumerate(instructions):
+            seg_id = inst.segment_id
+            out_wav = audio_dir / f"{seg_id}.wav"
+
+            if idx >= n:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False, error="skipped: beyond --limit",
+                ))
+                continue
+
+            # 缓存命中（与老路径一致）
+            if out_wav.exists() and out_wav.stat().st_size > 0 and not dry_run:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="",
+                ))
+                continue
+
+            if dry_run:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="dry_run: not invoked",
+                ))
+                continue
+
+            # voice_ref 解析
+            voice_ref = (inst.voice_ref or "").strip() or (
+                speaker_to_voice.get(inst.speaker) or ""
+            ).strip()
+            enable_clone = bool(inst.parameters.get("enable_reference_audio", True))
+
+            # 构造 multipart form（纯透传 parameters，不做 emotion→tag mapping）
+            text_field = inst.parameters.get("inline_tags_text", "") or inst.text
+            form_data: dict[str, str] = {
+                "text": text_field,
+                "instruction": inst.parameters.get("instruction", "") or "",
+                "temperature": str(inst.parameters.get("temperature", self.temperature)),
+                "top_p": str(inst.parameters.get("top_p", self.top_p)),
+                "max_new_tokens": str(inst.parameters.get("max_new_tokens", self.max_new_tokens)),
+            }
+
+            ref_wav_to_send: Path | None = None
+            if enable_clone and voice_ref:
+                ref_path = Path(voice_ref)
+                if ref_path.exists() and ref_path.stat().st_size > 0:
+                    ref_wav_to_send = ref_path
+                    form_data["prompt_text"] = self._get_prompt_text_for_voice(voice_ref)
+                    form_data["enable_reference_audio"] = "true"
+                # else: 文件不存在 → 不传 reference_audio，server 走默认音色路径
+
+            url = f"{self.base_url}/v1/voicegen/generate"
+            proxies = {"http": None, "https": None} if self.bypass_proxy else None
+
+            try:
+                if ref_wav_to_send is not None:
+                    with open(ref_wav_to_send, "rb") as fobj:
+                        files = {"reference_audio": (ref_wav_to_send.name, fobj, "audio/wav")}
+                        response = requests.post(
+                            url, data=form_data, files=files,
+                            proxies=proxies, timeout=self.timeout_per_seg, verify=False,
+                        )
+                else:
+                    response = requests.post(
+                        url, data=form_data,
+                        proxies=proxies, timeout=self.timeout_per_seg, verify=False,
+                    )
+                response.raise_for_status()
+                wav_bytes = response.content
+                if not wav_bytes or len(wav_bytes) < 44:
+                    results.append(AudioSegmentResult(
+                        segment_id=seg_id, speaker=inst.speaker,
+                        audio_path=None, success=False,
+                        error=f"server returned empty/invalid wav ({len(wav_bytes) if wav_bytes else 0} bytes)",
+                    ))
+                    continue
+                out_wav.write_bytes(wav_bytes)
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="",
+                ))
+            except Exception as err:  # noqa: BLE001
+                logger.exception("S2Pro synthesis failed for %s", seg_id)
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False,
+                    error=f"{type(err).__name__}: {err}",
+                ))
+
+        return results
+
+    def _get_prompt_text_for_voice(self, voice_ref: str) -> str:
+        """取 voice_ref wav 对应的转写文本（用于 S2Pro prompt_text）。
+
+        voicebank 生成的 wav 通常伴随同名的 .txt 文件（转写），读取它。
+        找不到则 fallback 到 profile extra_args.reference_text。
+        """
+        txt_path = Path(voice_ref).with_suffix(".txt")
+        if txt_path.exists():
+            return txt_path.read_text(encoding="utf-8").strip()
+        return str(self.extra_args.get("reference_text", "") or "")
 
     def _synthesize_one_via_http(
         self,
