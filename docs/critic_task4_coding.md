@@ -82,14 +82,24 @@
 
 附 `python -m py_compile src_next/critic/qwen3omni_critic.py`（CLAUDE.md §10 验证清单第 1 条）→ 0 退出码。
 
-### Step 5: 提交（**待用户确认**，见 §5）
+### Step 5: 提交（**已执行**，选项 B：分两个 commit）
 
-按用户偏好 `feedback_commit_control.md`：「不要默认提交，问清楚再 commit」。本次完成 §3 验收后**先暂停**，向用户确认提交策略再执行。
+按用户偏好 `feedback_commit_control.md`：「不要默认提交，问清楚再 commit」。Coding-Agent 给出 3 个选项后，用户选 B（与 Task 2/3 先例一致：代码 commit 严格匹配 plan，dev doc 单独 commit）。
 
-**plan Step 5 建议命令（待执行）：**
+**实际执行（2026-07-02）：**
+
+Commit 1（plan Step 5 原样）：
 ```bash
 git add src_next/critic/qwen3omni_critic.py src_next/critic/tests/test_qwen3omni_critic.py
 git commit -m "feat(critic): add Qwen3OmniCritic skeleton with construction test"
+# → 1da7024
+```
+
+Commit 2（dev doc 单独入库）：
+```bash
+git add docs/critic_task4_coding.md
+git commit -m "docs(critic): add task 4 coding dev doc"
+# → 2b79004
 ```
 
 ---
@@ -112,15 +122,15 @@ git commit -m "feat(critic): add Qwen3OmniCritic skeleton with construction test
 | `__init__` 默认参数：`base_url="http://10.50.121.102:8011"`, `timeout=120`, `bypass_proxy=True` | §4.3 grep 行 22-24 | ✓ |
 | 模块顶部 docstring 含「infer_lock」+「API 风险」两点警告（不为空） | §4.3 grep 行 6 + 行 9 | ✓ |
 | **此时还没有 `evaluate()` 方法**（Task 5 才加） | §4.3 grep `def ` 输出仅 1 行：`def __init__`（行 20）| ✓（无越界提前实现）|
-| `git log --oneline -5` 含 `feat(critic): add Qwen3OmniCritic skeleton with construction test` | **待提交后验证** | ⏳ |
+| `git log --oneline -5` 含 `feat(critic): add Qwen3OmniCritic skeleton with construction test` | §4.6 commit `1da7024` | ✓ |
 
 ### C. Pass 条件
 
 - A 全绿 ✓
-- B 抽查 3/4 已验证，1/4 待 commit 后验证
+- B 抽查 4/4 全部验证通过 ✓
 - 无 red flag
 
-**判定：** 提交完成且 `git log` 验证通过后 → **PASS**。
+**判定：** → **PASS**（2026-07-02 commit `1da7024` + `2b79004` 落盘后）。
 
 ---
 
@@ -194,9 +204,22 @@ short_audiobook_agent/
         └── qwen3omni_critic.py                   ★ 新增（本 task）
 ```
 
+### 4.6 Task 4 commit 后 `git log` 验证
+
+```
+$ git log --oneline -5
+2b79004 docs(critic): add task 4 coding dev doc
+1da7024 feat(critic): add Qwen3OmniCritic skeleton with construction test
+97f880b docs(critic): add task 3 coding dev doc
+e288ba5 docs(critic): document API risk + integration test gap
+a50b3a3 docs(critic): add task 2 coding dev doc
+```
+
+> `1da7024` 字面匹配 plan §Task 4 Acceptance B 第 4 条 → ✓。dev doc commit `2b79004` 单独入库，与 Task 2/3 先例一致。
+
 ---
 
-## 5. 提交策略（待用户决策）
+## 5. 提交策略（已执行 — 选项 B）
 
 ### 5.1 plan 默认提交
 
@@ -211,7 +234,11 @@ plan Task 4 Step 5 给出的范围 = 2 个文件（`qwen3omni_critic.py` + `test
 - **B.** 单独 commit（`docs(critic): add task 4 coding dev doc`），保持代码 commit 与 plan 一致，便于 judge-Agent 用 `git log` 精确匹配 plan 步骤
 - **C.** 暂不 commit，留在工作区给 judge-Agent 审完再说
 
-**Coding-Agent 推荐：** B（单独 commit）—— 与 Task 2 / Task 3 先例一致（commit `a50b3a3` / `97f880b`），保持 plan 描述的 commit 与代码一致，便于 judge-Agent 用 `git log` 精确匹配 plan 步骤。
+**用户决策（2026-07-02）：** **B**。
+
+**执行结果：**
+- Commit 1 `1da7024` `feat(critic): add Qwen3OmniCritic skeleton with construction test`（2 个代码文件，严格匹配 plan Step 5）
+- Commit 2 `2b79004` `docs(critic): add task 4 coding dev doc`（本开发文档）
 
 ### 5.3 其他 untracked 文件
 
@@ -250,4 +277,4 @@ plan Task 4 Step 5 给出的范围 = 2 个文件（`qwen3omni_critic.py` + `test
 
 ## 7. 一句话总结
 
-Task 4 = 1 个失败测试 + 1 个最小实现 + 1 行 commit。TDD 红绿循环一次走通（RED: `ModuleNotFoundError` → GREEN: `1 passed`），故意不写 `evaluate()`，把 Task 5 的接口边界卡死。Acceptance Section A 全绿，Section B 静态审查 3/4 已就绪，唯一待办是 commit（待用户确认提交策略）。
+Task 4 = 1 个失败测试 + 1 个最小实现 + 2 个 commit（代码 `1da7024` + dev doc `2b79004`）。TDD 红绿循环一次走通（RED: `ModuleNotFoundError` → GREEN: `1 passed`），故意不写 `evaluate()`，把 Task 5 的接口边界卡死。Acceptance Section A 全绿 + Section B 抽查 4/4 全部通过 → **PASS**。
