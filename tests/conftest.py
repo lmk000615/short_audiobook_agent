@@ -182,12 +182,14 @@ def indextts_config(model_configs_all) -> dict:
 def sample_model_specific_instructions() -> list[ModelSpecificTTSInstruction]:
     """3 个对齐 sample_segments 的 ModelSpecificTTSInstruction。
 
-    speaker → model 的对应关系：
-        narrator → CosyVoice3（旁白稳定叙述）
-        小松鼠   → S2Pro（表演型儿童角色）
-        老乌龟   → CosyVoice3（老年稳定叙述）
+    演示 per-segment 自由选 model 的设计意图：每个 speaker 在样本里只出现
+    一次，model 选择按台词风格决定：
+        narrator（旁白）→ CosyVoice3（稳定叙述）
+        小松鼠（活泼台词）→ S2Pro（表演型，inline_tags）
+        老乌龟（老年稳定台词）→ CosyVoice3（叙述型）
 
-    同 speaker 在本组样本里只出现一次，方便测试同-speaker-一致性 规则时不踩坑。
+    音色一致性由 voice cloning 保证（voice_ref 同一个 wav），不依赖
+    speaker 与 model 的固定绑定。
     """
     return [
         ModelSpecificTTSInstruction(

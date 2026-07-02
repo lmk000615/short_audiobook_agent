@@ -18,7 +18,7 @@ Audio-Oscar 的核心思路：**让 LLM 直接看到模型能力描述（model_c
 ## 2. Goal
 
 - 合并 stage 7（story_director）+ stage 8（tts_instruction_builder）为新 stage 7（tts_director），LLM 直接产出 `ModelSpecificTTSInstruction`（含 model + parameters）。
-- LLM 根据文本内容 + 角色档案从可用 TTS 池中**为每个 segment 选最优 model**（同 speaker 全文用同 model 一致性约束）。
+- LLM 根据文本内容 + 角色档案从可用 TTS 池中**为每个 segment 独立选最优 model**——同一 speaker 的不同段落可以使用不同 model，音色一致性由 voice cloning（同一个 voice_ref）保证。
 - adapter 双接口并存：老路径（_synthesize_legacy）保留 mapping 逻辑作 fallback，新路径（_synthesize_model_specific）纯透传。
 - 老链路（开关 false）完全不动，main 行为零差异。
 - 落盘格式：新链路 stage 7 输出 `tts_instructions.json`（内容是 `ModelSpecificTTSInstruction[]`），不再落 `director_plan.json`。
@@ -43,8 +43,9 @@ Stage 1-6 不变
     ↓
 Stage 7 tts_director  ← 新模块，合并老 7+8
     输入：segments + characters + voicebank + available model_configs[]
-    LLM 任务：为每个 segment 选 model + 输出该 model 的 parameters
-    约束：同一 speaker 全文用同一 model（避免声音不一致）
+    LLM 任务：为每个 segment 独立选 model + 输出该 model 的 parameters
+    一致性来源：所有 backend 都用同一个 voice_ref 克隆音色，
+                speaker 不变 → voice_ref 不变 → 声音一致
     输出：list[ModelSpecificTTSInstruction]（per-segment 可能不同 model）
     落盘：json/tts_instructions.json
     ↓
@@ -146,7 +147,7 @@ class ModelSpecificTTSInstruction:
 | 新增 | `src_next/analysis/prompts/__init__.py` |
 | 新增 | `src_next/analysis/prompts/tts_director_prompt.py`（system prompt 模板）|
 | 新增 | `src_next/analysis/tts_director.py`（`TTSDirectorAgent` 类）|
-| 新增 | `tests/test_tts_director_unit.py`（mock LLM，1:1 + 一致性 + fallback）|
+| 新增 | `tests/test_tts_director_unit.py`（mock LLM，1:1 + fallback + parameters 校验）|
 | 新增 | `tests/test_tts_director_integration.py`（真 LLM，`@pytest.mark.integration`）|
 
 ### C2: adapter 双接口改造
@@ -267,12 +268,21 @@ def synthesize(self, instructions, voicebank_result, output_dir, ...):
 
 老 mapping 逻辑（`_EMOTION_TO_S2PRO_TAG` / `_build_instruction` / `_emotion_to_tag`）全部保留，老路径调用时仍生效。新路径纯透传 `instruction.parameters`。
 
-### 7.3 Per-segment model selection + 同 speaker 一致性
+### 7.3 Per-segment 自由 model selection
 
-LLM 为每个 segment 独立选 model。两层保障一致性：
+LLM 为每个 segment 独立选 model，**不约束**同一 speaker 必须用同一 model。音色一致性
+由 voice cloning 保证：
 
-- **prompt 层**：system prompt 明确"同一 speaker 全文必须选同一 model"
-- **后处理层**：tts_director 输出后扫描，若同 speaker 出现多个 model，统一用首次出现的 model（写 warning 到 log）
+- voicebank stage 已经为每个 speaker 生成一个参考 wav（`voice_ref`）。
+- 所有 backend（CosyVoice3 / S2Pro / IndexTTS2）的 `voice_input` 都依赖参考音频。
+- 同一 speaker 的所有 segment 共享同一个 `voice_ref`，即便 model 不同，克隆出来的
+  音色都是同一个人的。
+- 实际鼓励：同一角色在情绪差异大的台词中自然切换 model（激动台词用 S2Pro，平复
+  叙述用 CosyVoice3），让表演更丰富。
+
+如果未来加 voice_input="optional_reference" 的 model（如 Qwen3TTS），不依赖参考音频
+克隆，那条 segment 会用模型默认音色——这种 segment 不参与"音色一致性"假设，prompt
+里会明确说明。
 
 ### 7.4 Pipeline stage 8 重写
 
@@ -323,7 +333,6 @@ LLM 没覆盖的 segment → `_fallback_instruction(segment, default_model_name,
 | LLM 输出缺 segment_id | fallback 补齐（model 用 default，parameters 用 default 值）|
 | LLM 输出 invalid model name（不在 loaded model_configs 的 name 集合）| fallback 覆盖该 segment |
 | LLM 输出 invalid parameters 字段（不在 model_config schema）| 用 model_config default 覆盖该字段，写 warning |
-| 同 speaker 多 model | 后处理统一（用首次出现的 model）+ warning |
 | adapter HTTP 失败 | 单段失败不阻断（沿用老链路行为），failed segment 标 `success=False` |
 | voice_ref 缺失 | CosyVoice/IndexTTS 走模型默认音色 + warning；S2Pro 默认 `enable_reference_audio=false` |
 | `backends.yaml` 不存在 / 解析失败 / 字段缺失 | 启动时立即报错（fail-fast），不进入 pipeline |
@@ -338,7 +347,7 @@ LLM 没覆盖的 segment → `_fallback_instruction(segment, default_model_name,
 
 `tests/test_tts_director_unit.py`：
 - 1:1 输出契约（输入 N segments → 输出 N instructions，segment_id 对应）
-- 同 speaker 一致性（mock LLM 故意返回不一致 → 后处理统一）
+- 同 speaker 跨段允许使用不同 model（mock LLM 返回不同 → 不做统一，直接透传）
 - fallback 路径（mock LLM 缺 segment → fallback 补齐）
 - invalid model name 处理
 - invalid parameters 字段处理
@@ -371,8 +380,8 @@ LLM 没覆盖的 segment → `_fallback_instruction(segment, default_model_name,
 
 ## 10. Risks & Open Questions
 
-1. **LLM 选 model 的合理性**：LLM 看到详细 description 后能否做出合理选择？需要 integration 测试验证。如果 LLM 倾向于"乱选"（如全选 S2Pro），可能需要在 prompt 加更强约束或后处理。
-2. **同 speaker 跨段绝对一致性**：后处理统一能保证 model 一致，但 parameters（如 emotion_vector）跨段可能漂移。需要在 prompt 明确"同 speaker 全文 emotion 一致"，或加后处理 clamp。
+1. **LLM 选 model 的合理性**：LLM 看到详细 description 后能否做出合理选择？需要 integration 测试验证。如果 LLM 倾向于"乱选"（如全选 S2Pro），可能需要在 prompt 加更强决策引导（如要求逐段解释选择理由）。
+2. **同 speaker 跨段 model 切换的连续性**：模型切换本身不影响音色（voice cloning 保证），但听感上"同一角色的两句话用了不同 TTS 后端"可能在韵律 / 节奏上有微小差异。如果用户反馈违和，可在 prompt 加"连续同情绪台词优先用同一 model"软约束。
 3. **多 adapter 创建的性能开销**：每个 model 第一次调用都要 lazy-create adapter（含 HTTP 连接池初始化）。3 个 model 串行调用会增加 ~1-2 秒。可接受。
 4. **prompt 长度膨胀**：3 个 model_config 都很详细（每个 ~50 行 JSON），全部注入 system prompt 后 token 数显著增加。如果未来加更多 model，需要拆成"short_description 优先 + 详细 schema 按需查"两段式。
 5. **C2 adapter 改造的代码量**：s2pro_adapter 已 807 行，加 `_synthesize_model_specific` 后会到 ~1000 行。可接受（adapter 本来就独立大文件），但需要小心保持双路径不互相污染。
