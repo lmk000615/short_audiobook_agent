@@ -25,18 +25,22 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import requests
-import soundfile as sf
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
 
-from src_next.core.data_models import AudioSegmentResult, TTSInstruction, VoicebankResult
+from src_next.core.data_models import (
+    AudioSegmentResult,
+    ModelSpecificTTSInstruction,
+    TTSInstruction,
+    VoicebankResult,
+)
 
 from .base import BaseTTSAdapter, TTSError
 
@@ -77,9 +81,33 @@ class CosyVoiceHTTPAdapter(BaseTTSAdapter):
         self.bypass_proxy = bool(self.extra_args.get("bypass_proxy", True))
         self.mode = str(self.extra_args.get("mode", _DEFAULT_MODE))
 
-    # ── BaseTTSAdapter 实现 ──────────────────────────────────────────
+    # ── 入口：synthesize 分发器（双接口并存，方案 A） ─────────────────
+    # 老链路（use_tts_director: false）传入 TTSInstruction，走 _synthesize_legacy
+    # 新链路（use_tts_director: true）传入 ModelSpecificTTSInstruction，走 _synthesize_model_specific
+
+    logger = logging.getLogger(__name__)
 
     def synthesize(
+        self,
+        instructions: list[Any],
+        voicebank_result: VoicebankResult,
+        output_dir: str,
+        **kwargs: Any,
+    ) -> list[AudioSegmentResult]:
+        """入口。按 instruction 类型分流到新/老路径。"""
+        if not instructions:
+            return []
+        if isinstance(instructions[0], ModelSpecificTTSInstruction):
+            return self._synthesize_model_specific(
+                instructions, voicebank_result, output_dir, **kwargs
+            )
+        return self._synthesize_legacy(
+            instructions, voicebank_result, output_dir, **kwargs
+        )
+
+    # ── BaseTTSAdapter 实现 ──────────────────────────────────────────
+
+    def _synthesize_legacy(
         self,
         instructions: list[TTSInstruction],
         voicebank_result: VoicebankResult,
@@ -222,7 +250,137 @@ class CosyVoiceHTTPAdapter(BaseTTSAdapter):
 
         return final_results
 
-    # ── 线程任务（单段合成） ─────────────────────────────────────────
+    # ── 新链路：ModelSpecificTTSInstruction 纯透传合成 ──────────────
+
+    def _synthesize_model_specific(
+        self,
+        instructions: list[ModelSpecificTTSInstruction],
+        voicebank_result: VoicebankResult,
+        output_dir: str,
+        *,
+        dry_run: bool = False,
+        limit: int = 0,
+        **_kwargs: Any,
+    ) -> list[AudioSegmentResult]:
+        """ModelSpecificTTSInstruction 的纯透传合成（新链路 use_tts_director: true）。
+
+        与 ``_synthesize_legacy`` 的区别：
+            - 不调 ``_build_prompt_text``（不做 emotion/tone/volume → 自然语言
+              prompt 的 mapping），LLM 已经直接给出 ``instruct_text``。
+            - ``inst.parameters`` 直接映射到 HTTP payload 的 mode / prompt_text /
+              text，不做字段加工。
+
+        parameters 透传规则（按 cosyvoice3.json schema）：
+            - mode = "instruct"（默认）/ "cross_lingual" / "zero_shot"
+            - instruct 模式：prompt_text = "You are a helpful assistant. <instruct_text>.<|endofprompt|>"
+            - cross_lingual 模式：text 用 cross_lingual_markers 替代，prompt_text 留空
+            - zero_shot 模式：prompt_text = "<|endofprompt|>"
+
+        voice_ref 优先取 instruction.voice_ref，否则 fallback 到
+        voicebank_result.speaker_to_voice[speaker]。voice_ref 以**路径字符串**
+        传入 prompt_audio（CosyVoice3 server 接受 base64 或路径）。
+
+        单段失败不阻断其他段（沿用老路径行为）。
+        """
+        audio_dir = Path(output_dir).expanduser() / self.output_subdir
+        audio_dir.mkdir(parents=True, exist_ok=True)
+
+        speaker_to_voice = (
+            voicebank_result.speaker_to_voice if voicebank_result else {}
+        ) or {}
+
+        timeout = int(self.extra_args.get("timeout_per_seg", _DEFAULT_TIMEOUT_PER_SEG))
+        results: list[AudioSegmentResult] = []
+
+        n = len(instructions) if not limit or limit <= 0 else min(limit, len(instructions))
+
+        for idx, inst in enumerate(instructions):
+            seg_id = inst.segment_id
+            out_wav = audio_dir / f"{seg_id}.wav"
+
+            if idx >= n:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False, error="skipped: beyond --limit",
+                ))
+                continue
+
+            # 缓存命中（与老路径一致）
+            if out_wav.exists() and out_wav.stat().st_size > 0 and not dry_run:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="",
+                ))
+                continue
+
+            # voice_ref 解析（instruction.voice_ref 优先，否则查 voicebank）
+            voice_ref = (inst.voice_ref or "").strip() or (
+                speaker_to_voice.get(inst.speaker) or ""
+            ).strip()
+            if not voice_ref:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False,
+                    error=f"missing voice_ref for speaker={inst.speaker!r}",
+                ))
+                continue
+
+            if dry_run:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="dry_run: not invoked",
+                ))
+                continue
+
+            # 从 instruction.parameters 构造 payload（纯透传，无 mapping）
+            mode = inst.parameters.get("mode", _DEFAULT_MODE)
+            if mode == "cross_lingual":
+                text_field = inst.parameters.get("cross_lingual_markers", "") or inst.text
+                prompt_text_field = ""
+            elif mode == "instruct":
+                instruct_text = inst.parameters.get("instruct_text", "") or ""
+                prompt_text_field = f"{_INSTRUCT_PREFIX}{instruct_text}.{_ENDOFPROMPT}"
+                text_field = inst.text
+            else:  # zero_shot
+                prompt_text_field = _ENDOFPROMPT
+                text_field = inst.text
+
+            payload: dict[str, Any] = {
+                "text": text_field,
+                "prompt_text": prompt_text_field,
+                "prompt_audio": voice_ref,  # 路径字符串
+                "mode": mode,
+                "stream": False,
+            }
+
+            try:
+                wav_bytes = self._post_generate(
+                    payload, timeout=timeout, logf=None,
+                )
+                if not wav_bytes or len(wav_bytes) < 44:
+                    results.append(AudioSegmentResult(
+                        segment_id=seg_id, speaker=inst.speaker,
+                        audio_path=None, success=False,
+                        error=f"server returned empty/invalid wav ({len(wav_bytes) if wav_bytes else 0} bytes)",
+                    ))
+                    continue
+                # 直接落盘（PCM 转换留给消费方；mock 测试用 raw 字节，真服务返回的
+                # 是 IEEE float wav，audio_merger 那侧目前能处理）
+                out_wav.write_bytes(wav_bytes)
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="",
+                ))
+            except Exception as err:  # noqa: BLE001
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False,
+                    error=f"{type(err).__name__}: {err}",
+                ))
+
+        return results
+
+    # ── 线程任务（单段合成，老链路用） ──────────────────────────────
 
     def _synthesize_one(
         self,
@@ -290,7 +448,13 @@ class CosyVoiceHTTPAdapter(BaseTTSAdapter):
         BytesIO + 显式 format 参数时会走 "Not allowed for existing files"
         检查（即便目标只是内存 buffer，没有任何磁盘文件存在），直接抛
         TypeError。去掉 format 让 soundfile 从 wav 字节流自己推断即可。
+
+        numpy / soundfile 走 lazy import：模块顶层不依赖它们，让
+        _synthesize_model_specific（不调本方法）能在缺这些 deps 的环境跑。
         """
+        import numpy as np  # noqa: WPS433
+        import soundfile as sf  # noqa: WPS433
+
         audio, sr = sf.read(io.BytesIO(wav_bytes), always_2d=False)
         audio = np.clip(audio, -1.0, 1.0)
         int16_audio = (audio * 32767).astype(np.int16)
