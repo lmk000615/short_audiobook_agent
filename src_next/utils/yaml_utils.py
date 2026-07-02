@@ -170,3 +170,59 @@ def _truncate_desc(text: str, *, max_chars: int = 200) -> str:
     if len(joined) <= max_chars:
         return joined
     return joined[: max_chars - 1] + "…"
+
+
+# ─── backends.yaml（全局 TTS registry，新链路 use_tts_director=true 用）─────
+
+_DEFAULT_BACKENDS_YAML = Path(__file__).resolve().parent.parent / "tts" / "backends.yaml"
+
+
+def load_backends_yaml(path: str | Path | None = None) -> dict[str, Any]:
+    """加载 src_next/tts/backends.yaml（全局 TTS backend 注册表）。
+
+    只在 pipeline.use_tts_director=true 时用。校验：
+    - 必填 key 存在（enabled_backends / backends / default_model）
+    - enabled_backends 是非空 list
+    - 每个 enabled_backends 条目都在 backends dict 里
+    - 每个 enabled_backends 条目都有 base_url
+
+    Args:
+        path: 覆盖路径（用于测试）。
+
+    Returns:
+        解析后的 YAML dict。
+
+    Raises:
+        FileNotFoundError: backends.yaml 不存在。
+        ValueError: schema 不合法。
+    """
+    yaml_path = Path(path).expanduser().resolve() if path else _DEFAULT_BACKENDS_YAML
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"backends.yaml not found at {yaml_path}")
+
+    data = load_yaml(yaml_path)
+
+    required_keys = {"enabled_backends", "backends", "default_model"}
+    missing = required_keys - set(data.keys())
+    if missing:
+        raise ValueError(f"backends.yaml 缺必填 key：{missing}")
+
+    if not isinstance(data["enabled_backends"], list) or not data["enabled_backends"]:
+        raise ValueError("backends.yaml：enabled_backends 必须是非空 list")
+
+    if not isinstance(data["backends"], dict):
+        raise ValueError("backends.yaml：backends 必须是 dict")
+
+    for backend_name in data["enabled_backends"]:
+        if backend_name not in data["backends"]:
+            raise ValueError(
+                f"backends.yaml：enabled_backends 条目 {backend_name!r} "
+                f"在 backends dict 里找不到"
+            )
+        if "base_url" not in data["backends"][backend_name]:
+            raise ValueError(
+                f"backends.yaml：backend {backend_name!r} 缺 base_url"
+            )
+
+    return data
+

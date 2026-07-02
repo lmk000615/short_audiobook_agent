@@ -1,0 +1,46 @@
+# src_next/tts/backends.yaml
+#
+# 全局 TTS backend 注册表。当 profile.pipeline.use_tts_director=true（或
+# CLI flag --use-tts-director）时由 pipeline 自动加载，替代 profile.tts 块。
+#
+# 加新 TTS 服务只改本文件 + 加一个 model_configs/<model>.json，
+# 不需要改任何 profile yaml。
+
+# 启用的 backend 列表。LLM 只能从这些 backend 对应的 model_configs 里选 model。
+# 必须是下面 backends 字典里 key 的子集。
+enabled_backends:
+  - cosyvoice_http
+  - s2pro_http
+  - indextts_http
+
+# 各 backend 的服务地址 + extra_args。
+# extra_args 透传给 adapter 构造函数（与老 profile.tts.extra_args 等价）。
+# 注意：adapter 实际读 timeout_per_seg（不是 timeout），与 cosyvoice_http /
+# s2pro_adapter / indextts_http 的 __init__ 保持一致。
+backends:
+  cosyvoice_http:
+    base_url: "http://10.50.121.102:8005"
+    extra_args:
+      max_workers: 4
+      timeout_per_seg: 300
+      bypass_proxy: true
+
+  s2pro_http:
+    base_url: "http://10.50.121.102:8010"   # 8010 端口（含音色克隆）
+    extra_args:
+      max_workers: 4
+      enable_reference_audio: true
+      enable_inline_tags: true
+      timeout_per_seg: 300
+      bypass_proxy: true
+
+  indextts_http:
+    base_url: "http://10.50.121.102:8009"
+    extra_args:
+      max_workers: 4
+      timeout_per_seg: 300
+      bypass_proxy: true
+
+# Fallback 模型（LLM 没覆盖的 segment 用这个）。
+# 必须是某个 model_configs/*.json 的 name 字段，且其 backend 在 enabled_backends 里。
+default_model: CosyVoice3
