@@ -226,3 +226,22 @@ def load_backends_yaml(path: str | Path | None = None) -> dict[str, Any]:
 
     return data
 
+
+def read_use_tts_director_flag(profile_path: str | Path) -> bool:
+    """从 profile yaml 读 pipeline.use_tts_director，默认 False。
+
+    配合任务 13 的 CLI flag ``--use-tts-director`` 实现 OR 逻辑：
+    pipeline 启动时同时检查本函数返回值 + CLI flag，任一为 True 即启用新链路。
+
+    Args:
+        profile_path: profile yaml 路径。
+
+    Returns:
+        pipeline.use_tts_director 显式为 true 时返回 True；缺字段 / False / 非 bool 值返回 False。
+    """
+    data = load_yaml(profile_path)
+    pipeline_block = data.get("pipeline", {}) or {}
+    if not isinstance(pipeline_block, dict):
+        return False
+    return bool(pipeline_block.get("use_tts_director", False))
+

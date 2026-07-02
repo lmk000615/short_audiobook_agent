@@ -133,3 +133,56 @@ default_model: SomeModel
     )
     with pytest.raises(ValueError, match="base_url"):
         load_backends_yaml(path=broken)
+
+
+# ── read_use_tts_director_flag（任务 11） ──────────────────────────
+
+
+def test_read_use_tts_director_flag_default_false(tmp_path):
+    """profile 没有 pipeline.use_tts_director 时默认 False。"""
+    from src_next.utils.yaml_utils import read_use_tts_director_flag
+
+    profile_path = tmp_path / "test_profile.yaml"
+    profile_path.write_text(
+        """
+llm: {backend: mock}
+tts: {backend: mock}
+output: {root: output}
+""",
+        encoding="utf-8",
+    )
+    assert read_use_tts_director_flag(profile_path) is False
+
+
+def test_read_use_tts_director_flag_true_when_set(tmp_path):
+    from src_next.utils.yaml_utils import read_use_tts_director_flag
+
+    profile_path = tmp_path / "test_profile.yaml"
+    profile_path.write_text(
+        """
+llm: {backend: mock}
+tts: {backend: mock}
+output: {root: output}
+pipeline:
+  use_tts_director: true
+""",
+        encoding="utf-8",
+    )
+    assert read_use_tts_director_flag(profile_path) is True
+
+
+def test_read_use_tts_director_flag_explicit_false(tmp_path):
+    from src_next.utils.yaml_utils import read_use_tts_director_flag
+
+    profile_path = tmp_path / "test_profile.yaml"
+    profile_path.write_text(
+        """
+llm: {backend: mock}
+tts: {backend: mock}
+output: {root: output}
+pipeline:
+  use_tts_director: false
+""",
+        encoding="utf-8",
+    )
+    assert read_use_tts_director_flag(profile_path) is False
