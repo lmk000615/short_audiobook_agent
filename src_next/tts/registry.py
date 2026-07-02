@@ -77,3 +77,51 @@ def create_tts_adapter(
         "当前支持: 'mock', 'indextts', 'indextts_http', 'cosyvoice_http', "
         "'s2pro_http', 'cosyvoice'（占位）, 'fishpro'（占位）, 'qwen_tts'（占位）。"
     )
+
+
+# ─── 新链路：带 lazy cache 的工厂（C3 step 2 / 方向 1 用） ──────────
+
+# 模块级缓存：{(backend, config_hash): adapter_instance}
+# stage 8 多 adapter 调度时（如 LLM 给 10 段选了 CosyVoice3），adapter 只构造
+# 一次，HTTP 连接池等开销分摊到所有该 backend 的合成调用。
+_adapter_cache: dict[tuple[str, int], BaseTTSAdapter] = {}
+
+
+def _config_hash(config: dict[str, Any]) -> int:
+    """config dict 的稳定 hash（作 cache key）。
+
+    sorted keys + ensure_ascii=False 让相同 dict 内容产生相同 hash。
+    default=str 兜底处理 dataclass / Path 等非原生 JSON 类型。
+    """
+    import json
+
+    return hash(json.dumps(config, sort_keys=True, ensure_ascii=False, default=str))
+
+
+def create_adapter_for_backend(backend: str, **config: Any) -> BaseTTSAdapter:
+    """按 backend + config 创建或返回缓存的 adapter。
+
+    与 ``create_tts_adapter``（每次都新建）不同，本函数按 ``(backend, config)``
+    tuple 缓存。stage 8 多 adapter 调度时用。
+
+    Args:
+        backend: backend key（如 'cosyvoice_http'）。
+        **config: adapter 构造参数（base_url / output_subdir / extra_args 等）。
+
+    Returns:
+        BaseTTSAdapter 实例。
+
+    Raises:
+        TTSError: backend 未知（透传自 create_tts_adapter）。
+    """
+    cache_key = (backend, _config_hash(config))
+    if cache_key in _adapter_cache:
+        return _adapter_cache[cache_key]
+    adapter = create_tts_adapter(backend, **config)  # 委托给现有工厂
+    _adapter_cache[cache_key] = adapter
+    return adapter
+
+
+def clear_adapter_cache() -> None:
+    """清空 adapter 缓存。主要用于测试隔离。"""
+    _adapter_cache.clear()
