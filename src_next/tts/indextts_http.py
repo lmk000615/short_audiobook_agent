@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -40,12 +41,18 @@ import requests
 import urllib3
 from urllib3.exceptions import InsecureRequestWarning
 
-from src_next.core.data_models import AudioSegmentResult, TTSInstruction, VoicebankResult
+from src_next.core.data_models import (
+    AudioSegmentResult,
+    ModelSpecificTTSInstruction,
+    TTSInstruction,
+    VoicebankResult,
+)
 
 from .base import BaseTTSAdapter, TTSError
 
 
 urllib3.disable_warnings(InsecureRequestWarning)
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_OUTPUT_SUBDIR = "audio_segments"
@@ -143,9 +150,31 @@ class IndexTTSHTTPAdapter(BaseTTSAdapter):
         self.extra_args: dict[str, Any] = dict(extra_args) if extra_args else {}
         self.bypass_proxy = bool(self.extra_args.get("bypass_proxy", True))
 
-    # ── BaseTTSAdapter 实现 ──────────────────────────────────────────
+    # ── 入口：synthesize 分发器（双接口并存，方案 A） ─────────────────
+    # 老链路（use_tts_director: false）传入 TTSInstruction，走 _synthesize_legacy
+    # 新链路（use_tts_director: true）传入 ModelSpecificTTSInstruction，走 _synthesize_model_specific
 
     def synthesize(
+        self,
+        instructions: list[Any],
+        voicebank_result: VoicebankResult,
+        output_dir: str,
+        **kwargs: Any,
+    ) -> list[AudioSegmentResult]:
+        """入口。按 instruction 类型分流到新/老路径。"""
+        if not instructions:
+            return []
+        if isinstance(instructions[0], ModelSpecificTTSInstruction):
+            return self._synthesize_model_specific(
+                instructions, voicebank_result, output_dir, **kwargs
+            )
+        return self._synthesize_legacy(
+            instructions, voicebank_result, output_dir, **kwargs
+        )
+
+    # ── BaseTTSAdapter 实现 ──────────────────────────────────────────
+
+    def _synthesize_legacy(
         self,
         instructions: list[TTSInstruction],
         voicebank_result: VoicebankResult,
@@ -292,7 +321,138 @@ class IndexTTSHTTPAdapter(BaseTTSAdapter):
 
         return final_results
 
-    # ── 线程任务（单段合成） ─────────────────────────────────────────
+    # ── 新链路：ModelSpecificTTSInstruction 纯透传合成 ──────────────
+
+    def _synthesize_model_specific(
+        self,
+        instructions: list[ModelSpecificTTSInstruction],
+        voicebank_result: VoicebankResult,
+        output_dir: str,
+        *,
+        dry_run: bool = False,
+        limit: int = 0,
+        **_kwargs: Any,
+    ) -> list[AudioSegmentResult]:
+        """ModelSpecificTTSInstruction 的纯透传合成（新链路 use_tts_director: true）。
+
+        与 ``_synthesize_legacy`` 的区别：
+            - 不调 ``_emotion_to_vector`` / ``_intensity_to_alpha`` 等 mapping
+              （LLM 已直接给出 emotion_vector / emotion_alpha）
+            - ``instruction.parameters`` 直接映射到 HTTP JSON body
+
+        IndexTTS-2 server 用 JSON body：
+            - text + reference_audio_base64（或 reference_audio_path）必填
+            - emotion_vector / emotion_alpha / emotion_text 等可选
+
+        voice_ref 处理（与老路径模式一致，但容忍测试场景的 missing 文件）：
+            - 文件存在 → base64 编码作 reference_audio_base64（生产路径）
+            - 文件不存在 → 传 path 字符串作 reference_audio_path（server 也接受）
+
+        单段失败不阻断其他段。
+        """
+        audio_dir = Path(output_dir).expanduser() / self.output_subdir
+        audio_dir.mkdir(parents=True, exist_ok=True)
+
+        speaker_to_voice = (
+            voicebank_result.speaker_to_voice if voicebank_result else {}
+        ) or {}
+
+        timeout = int(self.extra_args.get("timeout_per_seg", _DEFAULT_TIMEOUT_PER_SEG))
+        n = len(instructions) if not limit or limit <= 0 else min(limit, len(instructions))
+        results: list[AudioSegmentResult] = []
+
+        for idx, inst in enumerate(instructions):
+            seg_id = inst.segment_id
+            out_wav = audio_dir / f"{seg_id}.wav"
+
+            if idx >= n:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False, error="skipped: beyond --limit",
+                ))
+                continue
+
+            # 缓存命中
+            if out_wav.exists() and out_wav.stat().st_size > 0 and not dry_run:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="",
+                ))
+                continue
+
+            # voice_ref 解析
+            voice_ref = (inst.voice_ref or "").strip() or (
+                speaker_to_voice.get(inst.speaker) or ""
+            ).strip()
+            if not voice_ref:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False,
+                    error=f"missing voice_ref for speaker={inst.speaker!r}",
+                ))
+                continue
+
+            if dry_run:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="dry_run: not invoked",
+                ))
+                continue
+
+            # 构造 JSON body（纯透传 parameters）
+            body: dict[str, Any] = {"text": inst.text}
+
+            # voice_ref 处理：文件存在 → base64；不存在 → 路径字符串
+            voice_ref_path = Path(voice_ref)
+            if voice_ref_path.exists() and voice_ref_path.stat().st_size > 0:
+                voice_b64 = base64.b64encode(voice_ref_path.read_bytes()).decode("ascii")
+                body["reference_audio_base64"] = voice_b64
+            else:
+                body["reference_audio_path"] = voice_ref
+
+            # 可选 parameters 透传（按 indextts2.json schema）
+            for opt_field in (
+                "emotion_vector", "emotion_alpha", "emotion_text",
+                "use_random", "temperature", "top_p", "top_k",
+                "num_beams", "repetition_penalty", "max_mel_tokens",
+                "max_text_tokens", "interval_silence",
+            ):
+                if opt_field in inst.parameters:
+                    body[opt_field] = inst.parameters[opt_field]
+
+            url = f"{self.base_url}/v1/tts/synthesize"
+            proxies = {"http": None, "https": None} if self.bypass_proxy else None
+
+            try:
+                response = requests.post(
+                    url, json=body,
+                    proxies=proxies, timeout=timeout, verify=False,
+                )
+                response.raise_for_status()
+                wav_bytes = response.content
+                if not wav_bytes or len(wav_bytes) < 44:
+                    results.append(AudioSegmentResult(
+                        segment_id=seg_id, speaker=inst.speaker,
+                        audio_path=None, success=False,
+                        error=f"server returned empty/invalid wav ({len(wav_bytes) if wav_bytes else 0} bytes)",
+                    ))
+                    continue
+                out_wav.write_bytes(wav_bytes)
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=str(out_wav), success=True, error="",
+                ))
+            except Exception as err:  # noqa: BLE001
+                logger.exception("IndexTTS synthesis failed for %s", seg_id)
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False,
+                    error=f"{type(err).__name__}: {err}",
+                ))
+
+        return results
+
+    # ── 线程任务（单段合成，老链路用） ──────────────────────────────
 
     def _synthesize_one(
         self,

@@ -16,6 +16,7 @@ from src_next.core.data_models import (
     VoicebankResult,
 )
 from src_next.tts.cosyvoice_http import CosyVoiceHTTPAdapter
+from src_next.tts.indextts_http import IndexTTSHTTPAdapter
 from src_next.tts.s2pro_adapter import S2ProTTSAdapter
 
 
@@ -207,4 +208,81 @@ def test_s2pro_model_specific_passes_through_inline_tags(
     # instruction 字段全局透传（LLM 已经直接给出 [excited]，不做 emotion→tag mapping）
     assert data.get("instruction") == "[excited]", (
         f"instruction 字段未透传：{data}"
+    )
+
+
+# ── IndexTTS adapter 双接口测试（任务 8） ──────────────────────────
+
+
+@pytest.fixture
+def indextts_adapter():
+    return IndexTTSHTTPAdapter(
+        base_url="http://mock:8009",
+        output_subdir="audio_segments",
+        extra_args={"max_workers": 1, "timeout_per_seg": 10},
+    )
+
+
+@pytest.fixture
+def indextts_model_specific_instructions() -> list[ModelSpecificTTSInstruction]:
+    return [
+        ModelSpecificTTSInstruction(
+            segment_id="seg_001",
+            speaker="老乌龟",
+            text="孩子，时间会等你的。",
+            model="IndexTTS2",
+            parameters={
+                "emotion_vector": [0, 0, 0.6, 0, 0, 0.4, 0, 0],
+                "emotion_alpha": 0.7,
+                "temperature": 0.8,
+            },
+            voice_ref="/tmp/voicebank/laogui.wav",
+            attempt=1,
+        ),
+    ]
+
+
+def test_indextts_synthesize_routes_to_model_specific(
+    indextts_adapter, indextts_model_specific_instructions, voicebank_result, tmp_path
+):
+    """当 instructions[0] 是 ModelSpecificTTSInstruction 时走新路径。"""
+    with patch.object(
+        indextts_adapter, "_synthesize_model_specific",
+        return_value=[MagicMock(spec=AudioSegmentResult)],
+    ) as mock_ms, patch.object(
+        indextts_adapter, "_synthesize_legacy",
+        return_value=[MagicMock(spec=AudioSegmentResult)],
+    ) as mock_legacy:
+        indextts_adapter.synthesize(
+            indextts_model_specific_instructions, voicebank_result, str(tmp_path), dry_run=True
+        )
+        mock_ms.assert_called_once()
+        mock_legacy.assert_not_called()
+
+
+def test_indextts_model_specific_passes_through_emotion_vector(
+    indextts_adapter, indextts_model_specific_instructions, voicebank_result, tmp_path
+):
+    """instruction.parameters 的 emotion_vector 应原样透传给 HTTP JSON body
+    （不是从通用 emotion 字段推导）。"""
+    captured: dict = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return MagicMock(content=b"RIFF" + b"\x00" * 40 + b"wav", status_code=200)
+
+    with patch("src_next.tts.indextts_http.requests.post", side_effect=fake_post):
+        indextts_adapter._synthesize_model_specific(
+            indextts_model_specific_instructions, voicebank_result, str(tmp_path), dry_run=False
+        )
+
+    assert captured.get("url"), "HTTP post 未被调用"
+    # IndexTTS 用 JSON body
+    json_body = captured.get("json") or {}
+    assert json_body.get("emotion_vector") == [0, 0, 0.6, 0, 0, 0.4, 0, 0], (
+        f"emotion_vector 未透传：{json_body}"
+    )
+    assert json_body.get("emotion_alpha") == 0.7, (
+        f"emotion_alpha 未透传：{json_body}"
     )
