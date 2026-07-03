@@ -1741,6 +1741,23 @@ def run_mock_core_pipeline(
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _resolve_use_tts_director(*, profile_flag: bool, cli_flag: bool | None) -> bool:
+    """合并 profile.pipeline.use_tts_director 与 CLI flag。CLI flag 设置时优先。
+
+    Args:
+        profile_flag: profile.pipeline.use_tts_director 的值（默认 False）。
+        cli_flag: --use-tts-director / --no-use-tts-director 的值（未设为 None）。
+            --use-tts-director → True；--no-use-tts-director → False；都没传 → None。
+
+    Returns:
+        最终的 use_tts_director 值，注入 profile.pipeline.use_tts_director 让
+        run_pipeline 走对应分支。
+    """
+    if cli_flag is not None:
+        return cli_flag
+    return bool(profile_flag)
+
+
 def _parse_cli_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="有声书 Agent 主流程（mock / 真实 pipeline）",
@@ -1756,6 +1773,20 @@ def _parse_cli_args() -> argparse.Namespace:
                         help="走 run_mock_core_pipeline，忽略 --profile")
     parser.add_argument("--reuse-existing", action="store_true",
                         help="强制 reuse_existing=true（覆盖 profile 设置）")
+    # 方向1 开关：互斥对。两个都不传 → None（保留 profile 设置）
+    parser.add_argument(
+        "--use-tts-director",
+        dest="use_tts_director",
+        action="store_true",
+        default=None,
+        help="启用新 tts_director 链路（合并 stage 7+8，LLM 自动选 TTS model）",
+    )
+    parser.add_argument(
+        "--no-use-tts-director",
+        dest="use_tts_director",
+        action="store_false",
+        help="强制使用老链路（profile.tts.backend 固定单 TTS）",
+    )
     return parser.parse_args()
 
 
@@ -1772,9 +1803,17 @@ def main() -> int:
               flush=True)
         return 2
 
+    # 加载 profile + 合并 CLI flag
+    profile_dict = _load_pipeline_profile(args.profile)
+    profile_flag = bool(profile_dict.get("pipeline", {}).get("use_tts_director", False))
+    final_flag = _resolve_use_tts_director(
+        profile_flag=profile_flag, cli_flag=args.use_tts_director,
+    )
+    profile_dict.setdefault("pipeline", {})["use_tts_director"] = final_flag
+
     result = run_pipeline(
         args.input,
-        args.profile,
+        profile_dict,
         output_root=args.output_root,
         story_name=args.story_name,
         reuse_existing_override=True if args.reuse_existing else None,

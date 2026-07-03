@@ -123,3 +123,26 @@ def test_pipeline_on_flag_runs_9_stages(mock_pipeline_inputs, tmp_path):
             assert len(stages) == 9, f"期望 9 stage（新链路），实际 {len(stages)}"
         # 验证走了新路径（tts_director agent 被调）
         mock_agent.direct.assert_called()
+
+
+# ── _resolve_use_tts_director（任务 13：CLI flag 合并） ──────────
+
+
+def test_cli_flag_overrides_profile_use_tts_director_false():
+    """--use-tts-director CLI flag 应把 profile 的 use_tts_director 翻成 True。"""
+    from src_next.core.audiobook_pipeline import _resolve_use_tts_director
+    # profile=false，CLI=true → true
+    assert _resolve_use_tts_director(profile_flag=False, cli_flag=True) is True
+
+
+def test_cli_flag_off_keeps_profile_flag():
+    """没传 CLI flag（None）应保留 profile 设置。"""
+    from src_next.core.audiobook_pipeline import _resolve_use_tts_director
+    assert _resolve_use_tts_director(profile_flag=True, cli_flag=None) is True
+    assert _resolve_use_tts_director(profile_flag=False, cli_flag=None) is False
+
+
+def test_cli_flag_off_overrides_profile_flag_on():
+    """--no-use-tts-director 应强制 False，即使 profile=true。"""
+    from src_next.core.audiobook_pipeline import _resolve_use_tts_director
+    assert _resolve_use_tts_director(profile_flag=True, cli_flag=False) is False
