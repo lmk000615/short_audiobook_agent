@@ -11,7 +11,59 @@
 """
 from __future__ import annotations
 
+import json
+import re
+
+import requests
+
+from src_next.critic.prompts.critic_prompt import build_critic_prompt
 from src_next.core.data_models import CriticResult, ModelSpecificTTSInstruction, Segment
+
+
+_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?|\n?\s*```\s*$", re.MULTILINE)
+
+
+def _strip_code_fence(raw: str) -> str:
+    """Strip leading/trailing ```json ... ``` fences if present."""
+    return _CODE_FENCE_RE.sub("", raw.strip())
+
+
+def _extract_first_json(raw: str) -> dict | None:
+    """Find the first balanced {...} block in raw using raw_decode. Returns None if not found."""
+    decoder = json.JSONDecoder()
+    s = raw.strip()
+    for i, ch in enumerate(s):
+        if ch in "{[":
+            try:
+                obj, _ = decoder.raw_decode(s[i:])
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def _parse_scoring_json(raw_text: str) -> dict:
+    """Parse Qwen3-Omni's response text into a scoring dict.
+
+    Three-step fallback (borrowed from Audio-Oscar's parse_llm_json_payload):
+      1. Strip ```json fences
+      2. Try json.loads directly
+      3. Fall back to raw_decode scanning for first {...}
+
+    Raises ValueError if no JSON object can be extracted.
+    """
+    cleaned = _strip_code_fence(raw_text)
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    obj = _extract_first_json(cleaned)
+    if obj is None:
+        raise ValueError(f"no JSON object found in response: {raw_text[:200]!r}")
+    return obj
 
 
 class Qwen3OmniCritic:
@@ -23,12 +75,72 @@ class Qwen3OmniCritic:
         timeout: int = 120,
         bypass_proxy: bool = True,
     ) -> None:
-        """
-        Args:
-            base_url: Qwen3-Omni 服务地址（默认黄区 8011）。
-            timeout: 单次评估超时（秒）。Qwen3-Omni 单请求较慢，建议 120s+。
-            bypass_proxy: 是否绕过系统代理（黄区内网 true）。
-        """
         self.base_url = base_url
         self.timeout = timeout
         self.bypass_proxy = bypass_proxy
+        self._proxies = {"http": None, "https": None} if bypass_proxy else None
+
+    def evaluate(
+        self,
+        audio_path: str,
+        segment: Segment,
+        tts_instruction: ModelSpecificTTSInstruction,
+    ) -> CriticResult:
+        """评估单段音频。失败不抛异常，返回 overall=0.5 中性结果。"""
+        try:
+            return self._evaluate_inner(audio_path, segment, tts_instruction)
+        except Exception as exc:  # noqa: BLE001 — by design, catch-all to neutral fallback
+            return self._neutral_result(segment.segment_id, tts_instruction.attempt, str(exc))
+
+    def _evaluate_inner(
+        self,
+        audio_path: str,
+        segment: Segment,
+        tts_instruction: ModelSpecificTTSInstruction,
+    ) -> CriticResult:
+        prompt_text = build_critic_prompt(segment, tts_instruction)
+        payload = {
+            "audio": audio_path,
+            "task": "sound_analysis",
+            "text": prompt_text,
+            "return_audio": False,
+            "max_new_tokens": 1024,
+        }
+        url = f"{self.base_url}/v1/omni/audio_analysis"
+        resp = requests.post(
+            url,
+            json=payload,
+            proxies=self._proxies,
+            timeout=self.timeout,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"audio_analysis returned HTTP {resp.status_code}: {resp.text[:200]!r}"
+            )
+        data = resp.json()
+        raw_text = str(data.get("text", ""))
+        if not raw_text:
+            raise RuntimeError("audio_analysis returned empty text field")
+        scoring = _parse_scoring_json(raw_text)
+        scoring["segment_id"] = segment.segment_id
+        scoring["attempt"] = tts_instruction.attempt
+        return CriticResult.from_json(scoring, attempt=tts_instruction.attempt)
+
+    @staticmethod
+    def _neutral_result(segment_id: str, attempt: int, err_msg: str) -> CriticResult:
+        """Neutral 0.5 fallback when evaluation fails — per task card §1.3.1.
+
+        Note: deliberately 0.5 (not 0.0 like Audio-Oscar) so that transient
+        failures (network blips) don't force unnecessary repair cascades.
+        """
+        return CriticResult(
+            segment_id=segment_id,
+            quality=0.5,
+            emotion_alignment=0.5,
+            character_consistency=0.5,
+            rhythm_naturalness=0.5,
+            intelligibility=0.5,
+            overall=0.5,
+            suggestions=f"评估失败：{err_msg}，建议人工复核",
+            attempt=attempt,
+        )
