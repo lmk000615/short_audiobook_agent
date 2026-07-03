@@ -103,9 +103,17 @@ class TTSDirectorAgent:
             return []
 
         user_prompt = build_user_prompt(segments, character_profiles, voicebank_result)
+        # 输出特别大（每段 model + parameters ~200-400 tokens × 段数）：
+        # 1) 默认 max_tokens=1024 不够，必须显式拉高。
+        #    估算：每段 ~400 tokens + 512 余量。
+        # 2) Gemma4 生成大 JSON 慢，read timeout 拉到 300s。
+        # 对齐 src_next/analysis/story_director.py:202-208 的模式。
+        max_tokens = max(2048, len(segments) * 400 + 512)
         raw = self.llm.generate_json(
             prompt=user_prompt,
             system_prompt=self._system_prompt,
+            max_tokens=max_tokens,
+            timeout=(10.0, 300.0),
         )
 
         instructions_by_id = self._parse_response(raw, segments)

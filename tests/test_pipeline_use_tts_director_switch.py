@@ -27,15 +27,21 @@ _PIPELINE_MOD = "src_next.core.audiobook_pipeline"
 
 
 def _setup_common_mocks():
-    """返回 (mock_llm, mock_vb, mock_tts, mock_director, mock_builder) 共享 mock 设置。"""
+    """返回 (mock_llm, mock_vb, mock_tts) 共享 mock 设置。
+
+    voicebank mock 必须返回真 VoicebankResult dataclass（不是 MagicMock）：
+    pipeline stage 6 会调 _save_json(voicebank_result, ...)，MagicMock 没法
+    JSON 序列化，会让 pipeline 在 stage 6 后炸。
+    """
+    from src_next.core.data_models import VoicebankResult
+
     mock_llm = MagicMock()
     mock_vb = MagicMock()
     mock_tts = MagicMock()
-    # synthesize 返回空 list（pipeline 不要求返回真 AudioSegmentResult）
-    mock_tts.synthesize.return_value = []
-    mock_vb.prepare_voicebank.return_value = MagicMock(
-        speaker_to_voice={}, voicebank_dir="", backend="mock", success=True
+    mock_vb.prepare_voicebank.return_value = VoicebankResult(
+        speaker_to_voice={}, voicebank_dir="", backend="mock", success=True,
     )
+    mock_tts.synthesize.return_value = []
     return mock_llm, mock_vb, mock_tts
 
 
