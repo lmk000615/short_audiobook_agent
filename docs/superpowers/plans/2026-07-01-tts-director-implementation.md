@@ -3264,3 +3264,222 @@ pytest tests/test_tts_director_integration.py -v -m integration
 **架构变更说明（2026-07-02）**：原设计的"同 speaker → 同 model"约束已废弃。
 原因：voice cloning（所有 backend 共享同一个 voice_ref）保证音色一致性，
 不需要约束 LLM。改为 per-segment 自由选 model，让表演更丰富。详见 spec §7.3。
+
+---
+
+## 实施总结（2026-07-03 收工）
+
+整个 plan 全部 15 个任务完成，黄区端到端验证通过。下面是改动总览 + 触发开关 + 验证产物指引。
+
+### 阶段 1：C1 — model_configs + tts_director 新模块
+
+新增 LLM 直接看到 TTS 模型能力描述的链路 building blocks。
+
+| 文件 | 性质 | 作用 |
+|---|---|---|
+| `src_next/tts/model_configs/cosyvoice3.json` | 新增 | CosyVoice3 能力描述：instruct / cross_lingual / zero_shot 三模式 + parameters schema |
+| `src_next/tts/model_configs/s2pro.json` | 新增 | S2Pro 能力描述：instruction + inline_tags_text + emotion_vector + sampling 参数 |
+| `src_next/tts/model_configs/indextts2.json` | 新增 | IndexTTS2 能力描述：8 维 emotion_vector + emotion_alpha + sampling 参数 |
+| `src_next/utils/model_config_loader.py` | 新增 | 加载 / 校验 model_configs JSON：`load_model_config` / `load_all_model_configs` / `get_backend_for_model` / `get_default_parameters`，fail-fast |
+| `src_next/analysis/prompts/__init__.py` | 新增 | prompts 包初始化 |
+| `src_next/analysis/prompts/tts_director_prompt.py` | 新增 | LLM system prompt（注入 available_models JSON）+ user prompt（注入 segments + characters + voicebank） |
+| `src_next/analysis/tts_director.py` | 新增 | `TTSDirectorAgent` 类：`direct()` 调 LLM 产 `ModelSpecificTTSInstruction[]`；`_parse_response` 跳过无效 model + 未知 segment_id；`_apply_fallback` 用 default model 兜底；`_clean_parameters` 按 schema 清洗（drop 未知字段 + 类型错的用 default 覆盖）+ voice_ref 注入 |
+| `tests/conftest.py` | 新增 | pytest 共享 fixtures：`mock_llm` / `sample_segments` / `sample_characters` / `sample_voicebank_result` / `model_configs_all` |
+| `pytest.ini` | 新增 | 注册 `integration` / `slow` marker；testpaths = tests |
+| `tests/test_model_config_loader.py` | 新增 | loader 单元测试（7 个）|
+| `tests/test_tts_director_unit.py` | 新增 | TTSDirectorAgent 单元测试（mock LLM，4 个）|
+| `tests/test_tts_director_integration.py` | 新增 | 真 Gemma4 LLM 集成测试，`@pytest.mark.integration`（黄区跑）|
+
+### 阶段 2：C2 — adapter 双接口改造
+
+3 个 TTS adapter 都加 `_synthesize_model_specific`（纯透传），保留 `_synthesize_legacy`（mapping 逻辑）。
+
+| 文件 | 性质 | 作用 |
+|---|---|---|
+| `src_next/tts/cosyvoice_http.py` | 修改 | `synthesize` 重命名 `_synthesize_legacy`；加 `synthesize` dispatcher（isinstance 分流）；加 `_synthesize_model_specific`（parameters 纯透传，mode=instruct/cross_lingual/zero_shot + 自动拼 `You are a helpful assistant. <instruct_text>.<\|endofprompt\|>`）；numpy/soundfile 改 lazy import（蓝区无 numpy 也能 import 模块）|
+| `src_next/tts/s2pro_adapter.py` | 修改 | 同上结构；新路径用 multipart form-data：`text`/`instruction`/`temperature`/`top_p`/`max_new_tokens` + 可选 `reference_audio` 文件上传；加 `_get_prompt_text_for_voice` 读同名 .txt 转写 |
+| `src_next/tts/indextts_http.py` | 修改 | 同上结构；新路径用 JSON body：透传 `emotion_vector`/`emotion_alpha`/`emotion_text` 等 12 个可选字段；voice_ref 文件存在 → base64，不存在 → path 字符串（server 两种都接受）|
+| `tests/test_adapters_model_specific.py` | 新增 | 3 个 adapter 的路由 + 透传测试（7 个）|
+
+### 阶段 3：C3 — backends.yaml + pipeline 集成 + CLI flag
+
+集中 TTS 服务地址到全局 registry；pipeline 按 use_tts_director 开关切 stage 7/8/9 编号 + 多 adapter 分组调度；CLI flag 控制。
+
+| 文件 | 性质 | 作用 |
+|---|---|---|
+| `src_next/tts/backends.yaml` | 新增 | 全局 TTS registry：`enabled_backends`（cosyvoice_http / s2pro_http / indextts_http）+ 每个 backend 的 base_url + extra_args + `default_model: CosyVoice3` |
+| `src_next/utils/yaml_utils.py` | 修改 | 加 `load_backends_yaml(path=None)`：必填 key 校验 + subset 校验 + base_url 校验；加 `read_use_tts_director_flag(profile_path)` |
+| `src_next/tts/registry.py` | 修改 | 加 `_adapter_cache` 模块级 dict + `_config_hash`（sorted JSON.dumps）+ `create_adapter_for_backend(backend, **cfg)`（带 lazy cache）+ `clear_adapter_cache()`（测试用）|
+| `src_next/core/audiobook_pipeline.py` | 大改（+742/-228）| 加 5 个新 imports；加 `use_tts_director` + `total_stages` 变量；stage 1-6 编号 `f"N/{total_stages}"` 变量化；stage 7-8 条件分支（新 tts_director / 老 story_director + tts_instruction_builder）；stage 9/8 条件分支（新多 adapter 分组调度 / 老单 adapter）；stage 10/9 编号 + pause_map 条件（新链路用 `{}` 因新格式无 pause_hint）；跨开关 reuse 校验；加 `_resolve_use_tts_director`；argparse 加 `--use-tts-director` / `--no-use-tts-director`；main() 合并 CLI flag + profile flag 后注入 profile_dict |
+| `tests/test_backends_yaml_loader.py` | 新增 | loader 单元测试（10 个）+ use_tts_director flag 测试（3 个），蓝区跳过 |
+| `tests/test_registry_adapter_cache.py` | 新增 | cache 单元测试（5 个）|
+| `tests/test_pipeline_use_tts_director_switch.py` | 新增 | mock LLM/TTS/voicebank 验证开关切换（2 个 smoke + 3 个 resolver 单元测试），蓝区跳过 |
+| `tests/test_multi_backend_synthesis.py` | 新增 | 多 adapter 分组调度纯 Python 单元测试（3 个：分组 / 顺序保持 / 失败隔离）|
+
+### 阶段 4：C4 — docs sync
+
+4 份文档同步新链路用法。
+
+| 文件 | 改动 |
+|---|---|
+| `CLAUDE.md` | §4 加双 stage 表（老 10 / 新 9）；§6 加 use_tts_director 开关 + backends.yaml 说明；§11 维护表加一行（开关 / backends.yaml 改动 → 同步本文件）|
+| `README.md` | 「核心链路」加新链路 9-stage 概述；「当前支持的后端」加 Audio-Oscar 方向1 子节；「快速开始」加 `--use-tts-director` 演示命令 |
+| `src_next_主链路运行及核心模块说明.md` | §3.X 新增「新链路执行流程」（启用方式 + 9 stage 详解 + fallback 策略 + reuse 不兼容 + 排障）|
+| `src_next_总体架构说明.md` | §3.2 stage 表改成新老双表；§4.3 加 tts_director 子项（触发条件 + 数据契约 + 依赖）|
+
+### 触发开关：3 层逻辑（写在 pipeline 文件里）
+
+**所有触发逻辑都在 `src_next/core/audiobook_pipeline.py` 一个文件里**，分 3 层：
+
+#### 层 1：CLI flag 解析（line ~1780 附近）
+
+```python
+parser.add_argument(
+    "--use-tts-director",
+    dest="use_tts_director",
+    action="store_true",
+    default=None,  # 关键：default=None 而非 False，区分"未设"和"显式 false"
+    help="启用新 tts_director 链路（合并 stage 7+8，LLM 自动选 TTS model）",
+)
+parser.add_argument(
+    "--no-use-tts-director",
+    dest="use_tts_director",
+    action="store_false",
+    help="强制使用老链路",
+)
+```
+
+两个 flag 共享 `dest="use_tts_director"`，互斥。都没传 → `args.use_tts_director = None`。
+
+#### 层 2：flag 合并 resolver（line ~1744 附近）
+
+```python
+def _resolve_use_tts_director(*, profile_flag: bool, cli_flag: bool | None) -> bool:
+    """CLI flag 优先于 profile flag。"""
+    if cli_flag is not None:
+        return cli_flag
+    return bool(profile_flag)
+```
+
+#### 层 3：main() 注入 + run_pipeline 读取（line ~1810 附近）
+
+```python
+# main() 里：
+profile_dict = _load_pipeline_profile(args.profile)
+profile_flag = bool(profile_dict.get("pipeline", {}).get("use_tts_director", False))
+final_flag = _resolve_use_tts_director(
+    profile_flag=profile_flag, cli_flag=args.use_tts_director,
+)
+profile_dict.setdefault("pipeline", {})["use_tts_director"] = final_flag
+
+# run_pipeline() 里：
+use_tts_director = bool(pipeline_cfg.get("use_tts_director", False))
+total_stages = 9 if use_tts_director else 10
+# 后续 stage 7/8/9 用 use_tts_director 判断走哪个分支
+```
+
+#### 三种启用方式（任一即可）
+
+| 方式 | 命令 / 配置 | 优先级 |
+|---|---|---|
+| CLI 临时启用 | `python -m src_next.core.audiobook_pipeline ... --use-tts-director` | 最高 |
+| CLI 强制关掉 | `python -m src_next.core.audiobook_pipeline ... --no-use-tts-director` | 最高（覆盖 profile）|
+| Profile 持久启用 | 在任意 `yellow_*.yaml` 加 `pipeline: { use_tts_director: true }` | 最低（被 CLI flag 覆盖）|
+
+### 验证产物：在哪里看 LLM 差异化选 model
+
+**`<output_root>/<story_name>/json/tts_instructions.json`** 是 stage 7 tts_director 的落盘产物，也是检查 LLM 是否在差异化选 model 的**首选**文件。
+
+#### 文件结构（每条 ModelSpecificTTSInstruction）
+
+```json
+[
+  {
+    "segment_id": "seg_001",
+    "speaker": "narrator",
+    "text": "清晨，小松鼠蹦蹦跳跳地穿过森林。",
+    "model": "CosyVoice3",
+    "parameters": {
+      "mode": "instruct",
+      "instruct_text": "用平稳、温和且富有画面感的语气进行叙述",
+      "cross_lingual_markers": "",
+      "speed": 1.0
+    },
+    "voice_ref": "<output_root>/.../voicebank/narrator.wav",
+    "attempt": 1
+  },
+  {
+    "segment_id": "seg_002",
+    "speaker": "小松鼠",
+    "text": "乌龟爷爷，您今天怎么这么慢呀？",
+    "model": "S2Pro",
+    "parameters": {
+      "instruction": "[excited]",
+      "inline_tags_text": "[excited]乌龟爷爷，[pause]您今天怎么这么慢呀？",
+      "enable_reference_audio": true,
+      "temperature": 1.0,
+      "top_p": 0.6
+    },
+    "voice_ref": "<output_root>/.../voicebank/小松鼠.wav",
+    "attempt": 1
+  },
+  ...
+]
+```
+
+#### 怎么判断差异化决策成立
+
+**对比不同 segment 的 `model` 字段**——如果出现 ≥ 2 种不同值，说明 LLM 在按内容差异化选 model。黄区 5 段故事的实测结果：
+
+| segment | speaker | LLM 选的 model | 选择理由 |
+|---|---|---|---|
+| seg_001 | narrator | CosyVoice3 | 旁白用稳定叙述强（instruct 模式）|
+| seg_002 | 小松鼠 | S2Pro | 活泼台词用 `[excited]` 内联标签 |
+| seg_003 | narrator | CosyVoice3 | 同 speaker 跨段一致 |
+| seg_004 | 老乌龟 | IndexTTS2 | 老年沧桑用 emotion_vector 表达精确情感 |
+| seg_005 | 小松鼠 | S2Pro | 同 speaker 跨段一致 |
+
+3 种 backend 都被合理使用——证明 LLM 真的在按 model_configs 的 `strengths/best_for` 做判断，不是图省事全选 default。
+
+#### 一行命令快速检查
+
+```bash
+# 查看每段选了哪个 model + 简要 parameters
+python -c "
+import json
+data = json.load(open('<output_root>/<story_name>/json/tts_instructions.json'))
+for inst in data:
+    params_preview = str(inst['parameters'])[:80]
+    print(f\"{inst['segment_id']} | {inst['speaker']:8s} | model={inst['model']:12s} | params={params_preview}\")
+"
+
+# 数 model 分布（≥2 种 = 差异化成立）
+python -c "
+import json
+from collections import Counter
+data = json.load(open('<output_root>/<story_name>/json/tts_instructions.json'))
+counter = Counter(inst['model'] for inst in data)
+print('Model 分布：', dict(counter))
+print('差异化成立' if len(counter) >= 2 else 'LLM 全选 default，可能 prompt 引导不够')
+"
+```
+
+#### 其他相关产物（排障用）
+
+| 文件 | 用途 |
+|---|---|
+| `json/pipeline_result.json` | stage 汇总（含 stages 数组 + name + elapsed + status），看 `[7/9] tts_director` 是否 success + `[8/9] tts_synthesis` success=N/N |
+| `json/audio_segment_results.json` | stage 8 每段合成结果（含 audio_path + success + error），多 adapter 调度失败时排障 |
+| `audio_segments/<seg_id>.wav` | 每段音频，文件大小 > 0 即合成成功 |
+
+### 老链路产物 vs 新链路产物对照
+
+| 产物 | 老链路（10 stage）| 新链路（9 stage）|
+|---|---|---|
+| `director_plan.json` | ✅ 生成 | ❌ 不生成（合并到 tts_instructions）|
+| `tts_instructions.json` | ✅ 含 `TTSInstruction`（无 model 字段）| ✅ 含 `ModelSpecificTTSInstruction`（有 model 字段）|
+| `audio_segment_results.json` | ✅ 单 adapter | ✅ 多 adapter 调度结果合并 |
+| `audio_final/<story>.wav` | ✅ | ✅ |
+
+跨开关 reuse 时（`--reuse-existing`）tts_instructions.json 格式不匹配会 warning + 强制重跑（避免老 TTSInstruction 污染新链路）。
+
