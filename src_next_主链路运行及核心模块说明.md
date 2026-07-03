@@ -142,6 +142,35 @@ nohup python -m src_next.app.gradio_webui \
 - 输入：tts_instructions + voicebank_result
 - 输出：`list[AudioSegmentResult]`（每段一个 wav 文件）
 - 失败段标 `success=False` 但不阻断其他段（除非 profile `stop_on_tts_error: true`）
+
+---
+
+## 3.X 新链路执行流程（`use_tts_director=true`，9 stage）
+
+启用方式（任一即可，CLI 优先于 profile）：
+- CLI：`--use-tts-director`（临时启用）/ `--no-use-tts-director`（强制走老链路）
+- Profile：在任意 `yellow_*.yaml` 加 `pipeline: { use_tts_director: true }`
+
+执行流程（9 stages）：
+1. **stage 1-6 不变**（参数解析 + 文本切分 / LLM / 引号 / 说话人 / 角色 / voicebank）
+2. **stage 7：tts_director**（合并老步骤 7+8）
+   - 文件：`analysis/tts_director.py:TTSDirectorAgent.direct()`
+   - 加载：`src_next/tts/backends.yaml`（全局 TTS 服务注册）+ `src_next/tts/model_configs/*.json`（3 份 model 能力描述）
+   - 输入：resolved segments + characters + voicebank_result + available_models
+   - LLM 任务：**为每个 segment 选最优 model + 输出该 model 的 parameters**（per-segment，可能跨 backend）
+   - 输出：`list[ModelSpecificTTSInstruction]`
+   - 落盘：`json/tts_instructions.json`（合并 director_plan，老格式 `director_plan.json` 不再生成）
+   - LLM 漏 segment / 输出无效 model / parameters 字段不在 schema → fallback 用 `backends.yaml.default_model` + 该 model 的 default parameters 兜底
+3. **stage 8：tts_synthesis 多 adapter 分组调度**
+   - 按 `instruction.model` 分组 → 每组 lazy-create adapter（`registry.create_adapter_for_backend`）→ 各自调对应 backend HTTP
+   - 合并结果按 segment_id 排序还原（保持原顺序）
+   - adapter 双接口：`ModelSpecificTTSInstruction` → `_synthesize_model_specific`（纯透传 parameters）；`TTSInstruction` → `_synthesize_legacy`（保留 emotion→tag 等 mapping）
+4. **stage 9：audio_merger**（同老链路 stage 10，但 `pause_map={}` 因为新格式无 `pause_hint`）
+
+排障：
+- 新链路下 `director_plan.json` 不再生成 → 排障首选 `pipeline_result.json`
+- 跨开关 reuse 不兼容：检测 JSON 首元素是否含 `model` 字段，老格式 → warning + 重新跑 stage 7
+- 新链路首次跑会比较慢（每个 model 第一次调用都要 lazy-create adapter + HTTP 连接池初始化）
 - 落盘：`json/audio_segment_results.json` + `audio_segments/<seg_id>.wav`
 
 ### 步骤 10：音频合并（stage 10）

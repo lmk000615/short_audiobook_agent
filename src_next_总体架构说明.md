@@ -45,9 +45,11 @@
 | 终点 | `<output_root>/<story_name>/audio_final/<story_name>.wav` |
 | 同时产出 | `<output_root>/<story_name>/json/*.json`（10 份中间产物）+ `logs/pipeline.log` + `pipeline_result.json` |
 
-### 3.2 一次任务经过的 10 个阶段
+### 3.2 一次任务经过的 10 / 9 个阶段（看 `use_tts_director` 开关）
 
 按 `src_next/core/audiobook_pipeline.py` 的 stage 注释：
+
+**老链路（`use_tts_director: false`，默认，10 stage）**：
 
 | Stage | 模块 | 主要动作 |
 |---|---|---|
@@ -61,6 +63,17 @@
 | 8/10 | `core/tts_instruction_builder.py` | 合并 segment + character + director + voice_ref → `list[TTSInstruction]` |
 | 9/10 | `tts/*` adapter | 真实合成每段 wav，输出 `list[AudioSegmentResult]` |
 | 10/10 | `core/audio_merger.py` | 把分段 wav 按顺序拼成最终 wav |
+
+**新链路（`use_tts_director: true`，9 stage，Audio-Oscar 方向1）**：
+
+| Stage | 模块 | 主要动作 |
+|---|---|---|
+| 1/9 - 6/9 | 同上 stage 1-6 | 完全相同 |
+| **7/9** | `analysis/tts_director.py` | **合并老 7+8**：LLM 直接看 `tts/model_configs/*.json` 能力描述，为每段选 model + 输出该 model 的 parameters，产出 `list[ModelSpecificTTSInstruction]` |
+| 8/9 | `tts/*` adapter（多路） | 按 `instruction.model` 分组调度，每组 lazy-create adapter，分别 HTTP 合成 |
+| 9/9 | `core/audio_merger.py` | 拼接（`pause_map={}` 因为新格式无 `pause_hint`）|
+
+新链路默认关闭，启用方式：CLI `--use-tts-director` 或在任意 `yellow_*.yaml` 加 `pipeline: { use_tts_director: true }`。详见 `src_next_主链路运行及核心模块说明.md` §3.X。
 
 ### 3.3 主入口
 
@@ -95,7 +108,11 @@
   - `analysis/quote_classifier.py`（stage 3）
   - `analysis/story_resolver.py`（stage 4）
   - `analysis/character_analyzer.py`（stage 5）
-  - `analysis/story_director.py`（stage 7）
+  - `analysis/story_director.py`（老链路 stage 7）
+  - `analysis/tts_director.py`（**新链路 stage 7，合并老 story_director + tts_instruction_builder**）
+    - 触发条件：`profile.pipeline.use_tts_director=true` 或 CLI `--use-tts-director`
+    - 数据契约：`ModelSpecificTTSInstruction`（per-segment，含 `model` + `parameters`）
+    - 依赖 `utils/model_config_loader.py` 加载 `tts/model_configs/*.json`，`utils/yaml_utils.py:load_backends_yaml` 加载全局 TTS registry（`src_next/tts/backends.yaml`）
 - 这一层**只依赖 `BaseLLMClient` 抽象接口**，不感知具体 LLM 后端
 
 ### 4.4 后端能力层（`llm/` + `voicebank/` + `tts/`）

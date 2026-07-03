@@ -8,7 +8,9 @@
 
 ## 核心链路
 
-一次任务经过 10 个 stage，从故事 txt 到最终有声书 wav：
+一次任务经过 **10 或 9 个 stage**（取决于 `pipeline.use_tts_director` 开关），从故事 txt 到最终有声书 wav：
+
+**默认（`use_tts_director: false`，老链路，10 stage）**：
 
 | Stage | 模块 | 产物 |
 |---|---|---|
@@ -22,6 +24,8 @@
 | 8/10 tts_instruction_builder | `core/tts_instruction_builder.py` | `tts_instructions.json` |
 | 9/10 tts_synthesis | `tts/*` adapter | `audio_segment_results.json` + `<seg_id>.wav` |
 | 10/10 audio_merger | `core/audio_merger.py` | `audio_final/<story>.wav` |
+
+**新链路（`use_tts_director: true`，9 stage）**：合并 stage 7+8 为新 stage 7 `tts_director`——LLM 直接看到 `tts/model_configs/*.json` 能力描述，**为每个 segment 自动选最优 TTS model**（per-segment，可能跨 backend），adapter 纯透传 parameters。stage 8 改为多 adapter 分组调度。新链路默认关闭，详见 §「当前支持的后端」。
 
 中间的**导演层**（stage 3–7）是项目核心：
 - 谁在说话？哪部分是旁白？哪部分是真对白？
@@ -72,6 +76,16 @@ txt + profile
 
 **关键不变量**：`TTSInstruction` 是**模型无关的通用合成指令**，不带任何 backend 专用字段（如 `indextts_speed` / `cosyvoice_prompt`）。backend 专用参数由各 adapter 内部根据通用字段推断。这是分层边界的核心保证，破了会让 core / analysis 层被具体后端污染。
 
+### Audio-Oscar 方向1：tts_director 新链路（可选）
+
+启用 `pipeline.use_tts_director: true` 或 CLI `--use-tts-director` 时切换到新链路：
+- LLM 不再产出通用 `TTSInstruction`，而是直接看到 `tts/model_configs/*.json` 能力描述，**为每个 segment 选最优 model + 输出该 model 的具体 parameters**
+- TTS 服务地址集中维护在 `src_next/tts/backends.yaml`（profile.tts 块只剩 `output_subdir`）
+- adapter 双接口：老路径 `_synthesize_legacy` 保留 mapping 逻辑，新路径 `_synthesize_model_specific` 纯透传
+- 总 stage 数 10 → 9（合并老 stage 7+8）
+
+加新 TTS 服务 = 改 `backends.yaml` + 加 `model_configs/<model>.json`，profile 完全不动。
+
 ### 当前可用 profile
 
 | Profile | 区域 | 组合 |
@@ -100,6 +114,17 @@ python -m src_next.core.audiobook_pipeline \
 ```
 
 预期耗时 3–5 分钟。产物落到 `output-src-next/yellow_qwen3http_cosyvoicehttp/sample_story_01/`。
+
+### 新链路演示（LLM 自动选 TTS model）
+
+```bash
+python -m src_next.core.audiobook_pipeline \
+    --input input/sample_story_01.txt \
+    --profile src_next/profiles/yellow_qwen3http_cosyvoicehttp.yaml \
+    --use-tts-director
+```
+
+启用后：9 stage（合并老 stage 7+8），LLM 直接看 `model_configs/*.json` 为每个 segment 选 CosyVoice3 / S2Pro / IndexTTS2，多 adapter 分组调度合成。
 
 ### 离线 mock 测试（不依赖任何服务）
 

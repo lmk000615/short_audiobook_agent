@@ -63,9 +63,15 @@ short_audiobook_agent/
 
 ---
 
-## 4. 主链路：一次任务的 10 个 stage
+## 4. 主链路：一次任务的 10 个 stage（或 9 个，看开关）
+
+**Stage 编号随 `pipeline.use_tts_director` 开关变化**：
+- `false`（默认）：10 stage（老链路）
+- `true`：9 stage（新链路，stage 7 = tts_director 合并老 7+8）
 
 `src_next/core/audiobook_pipeline.py` 集中编排，**所有 stage 在同一个文件里**：
+
+### 老链路（`use_tts_director: false`，默认）
 
 | Stage | 模块 | 产物 |
 |---|---|---|
@@ -81,8 +87,24 @@ short_audiobook_agent/
 | 10/10 audio_merger | `core/audio_merger.py` | `audio_result.json` + `audio_final/<story>.wav` |
 | 末尾 | `_build_pipeline_result` | `pipeline_result.json`（汇总，排障首选） |
 
+### 新链路（`use_tts_director: true`）
+
+| Stage | 模块 | 产物 |
+|---|---|---|
+| 1/9 build_segments | 同上 | 同上 |
+| 2/9 create_llm_client | 同上 | 同上 |
+| 3/9 quote_classifier | 同上 | 同上 |
+| 4/9 story_resolver | 同上 | 同上 |
+| 5/9 character_analyzer | 同上 | 同上 |
+| 6/9 voicebank | 同上 | 同上 |
+| **7/9 tts_director**（合并老 7+8） | `analysis/tts_director.py` | `tts_instructions.json`（含 `ModelSpecificTTSInstruction[]`）|
+| 8/9 tts_synthesis | `tts/*` 多 adapter 分组调度（按 `instruction.model`） | `audio_segment_results.json` + `audio_segments/<seg_id>.wav` |
+| 9/9 audio_merger | `core/audio_merger.py`（`pause_map={}`，新格式无 `pause_hint`）| `audio_result.json` + `audio_final/<story>.wav` |
+
+新链路不再生成 `director_plan.json`——排障首选 `pipeline_result.json`。
+
 **两个对等入口，共用同一套 stage 编排**：
-- CLI：`python -m src_next.core.audiobook_pipeline --input ... --profile ...`
+- CLI：`python -m src_next.core.audiobook_pipeline --input ... --profile ... [--use-tts-director]`
 - WebUI：`python -m src_next.app.gradio_webui --host 0.0.0.0 --port 7860`
 
 ---
@@ -120,6 +142,20 @@ pipeline:   # save_intermediate_json / reuse_existing / stop_on_tts_error
 ```
 
 可选：`webui.display_name` / `*.extra_args`（如 `max_workers` / `bypass_proxy`）。
+
+### `pipeline.use_tts_director` 开关（Audio-Oscar 方向1，新）
+
+`true` 时启用 Audio-Oscar 方向1 新链路：
+- 加载全局 `src_next/tts/backends.yaml` 取代 `profile.tts` 块（仅保留 `output_subdir`）
+- LLM 自动从 `enabled_backends` 对应的 `model_configs/*.json` 中**为每个 segment 选最优 model**（per-segment，可能跨 backend）
+- 老 stage 7 (`story_director`) + stage 8 (`tts_instruction_builder`) 合并为新 stage 7 (`tts_director`)
+- 总 stage 数从 10 → 9；adapter 改为多路（按 `instruction.model` 分组调度）
+
+启用方式（任一即可，CLI 优先）：
+1. CLI：`--use-tts-director`（临时启用）/ `--no-use-tts-director`（强制走老链路）
+2. Profile yaml：在任意 `yellow_*.yaml` 加 `pipeline: { use_tts_director: true }`
+
+加新 TTS 服务 = 改 `src_next/tts/backends.yaml` + 加 `src_next/tts/model_configs/<model>.json`，profile yaml 完全不动。
 
 ### 当前可用 profile
 
@@ -263,6 +299,7 @@ python -m src_next.core.audiobook_pipeline \
 | 新增 / 删除 TTS / LLM / voicebank backend | ✅ 必更新 | §6 profile 表 + §8 扩展表 |
 | 新增 / 删除 profile yaml | ✅ 必更新 | §6 profile 表 |
 | 改动 `core/data_models.py` 的字段 | ✅ 必更新 | §5 不变量（如果动了 backend 专用字段约束）|
+| 启用 / 禁用 / 重命名 `pipeline.use_tts_director` 开关或 `backends.yaml` 字段 | ✅ 必更新 | §6 开关说明 + §4 stage 表（10/9 切换）|
 | 改动 stage 落盘 JSON 文件名 | ✅ 必更新 | §4 表格 + §7 产物结构 |
 | 调整目录分层（新增 / 重命名子目录） | ✅ 必更新 | §2 + §3 |
 | 修复单个 adapter 内部 bug | ❌ 不需要 | — |
