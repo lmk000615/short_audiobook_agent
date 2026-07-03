@@ -94,3 +94,24 @@ def test_evaluate_returns_critic_result_on_success(monkeypatch):
     assert 0.0 <= result.overall <= 1.0
     assert isinstance(result.suggestions, str)
     assert result.suggestions  # non-empty
+
+
+def test_critic_prompt_includes_expected_vs_actual_context():
+    """Prompt must contain original text, speaker, expected emotion, and 5-dim schema."""
+    from src_next.critic.prompts.critic_prompt import build_critic_prompt
+
+    seg, inst = _make_segment_and_instruction()
+    prompt = build_critic_prompt(seg, inst)
+
+    # Expected vs Actual pattern (Audio-Oscar §B.14)
+    assert "窗外下着大雨" in prompt  # original text
+    assert "narrator" in prompt  # speaker
+    assert "平稳叙述" in prompt  # expected emotion from parameters
+
+    # 5 dimensions (task card §1.3.1)
+    for dim in ("quality", "emotion_alignment", "character_consistency",
+                "rhythm_naturalness", "intelligibility"):
+        assert dim in prompt
+
+    # Strict JSON schema embedded (Audio-Oscar §7.2)
+    assert "suggestions" in prompt
