@@ -1,19 +1,22 @@
 """src_next/core/audio_merger.py
 
-音频拼接 — 最小可用版本（v2，加段间静音）。
+音频拼接 — 最小可用版本（v3，加跨 backend 重采样）。
 
 策略：
     1. 过滤 ``success=True`` 且 wav 文件实际存在的 AudioSegmentResult；
-    2. 用 stdlib ``wave`` 模块按 segment 顺序直接拼接 wav 字节流；
-    3. 全部 wav 必须同采样率 / 同位深 / 同声道——否则只把不一致的段跳过
-       并写到 errors.log，不阻断整条 pipeline；
+    2. 用 stdlib ``wave`` 模块按 segment 顺序读 wav 字节流；
+    3. 以第一段为基准（nchannels / sampwidth / framerate）：
+       - **位深 / 声道不一致**：跳过该段（audioop.ratecv 不能处理 sampwidth
+         和 nchannels 转换；这种场景需要专门转换，目前不支持）
+       - **采样率不一致**：用 stdlib ``audioop.ratecv`` 重采样到基准采样率
+         （v3 新增，支持新链路 tts_director 多 backend 混合输出）
     4. **段间按 ``pause_seconds_after[segment_id]`` 插入静音**（导演层的
        ``pause_hint`` 通过调用方传进来）。
 
 不做的事（保留 TODO）：
-    * 不做重采样（采率不一致直接跳过该段，TODO: 接 torchaudio / librosa 重采样）；
     * 不做响度归一化；
-    * 不接 ffmpeg / pydub，避免引入新依赖。
+    * 不接 ffmpeg / pydub，避免引入新依赖；
+    * sampwidth/nchannels 不一致仍跳过（需重采样 + 位深转换，复杂度不值）。
 
 若所有段都失败 / 不存在，函数返回 success=False + final_audio=final_path
 （不写文件），调用方自行决定怎么呈现给用户。
@@ -21,6 +24,7 @@
 
 from __future__ import annotations
 
+import audioop
 import wave
 from pathlib import Path
 
@@ -85,13 +89,15 @@ def merge_audio_segments(
             success=False,
         )
 
-    # 2. 读所有 wav，校验格式一致；以第一段为基准；同时收集每段对应的静音秒数
+    # 2. 读所有 wav，校验格式（位深 / 声道一致），不一致采样率重采样；
+    #    以第一段为基准；同时收集每段对应的静音秒数
     base_params: wave._wave_params | None = None
     # 每项：(audio_frames_bytes, pause_seconds_after_this_segment)
     frames_with_pause: list[tuple[bytes, float]] = []
     total_frames = 0
     total_silence_frames = 0
     skipped_format: list[tuple[str, str]] = []
+    resampled: list[tuple[str, str]] = []  # (segment_id, "from→to Hz")
 
     total_usable = len(usable)
     for idx, seg in enumerate(usable):
@@ -99,25 +105,39 @@ def merge_audio_segments(
         try:
             with wave.open(str(Path(seg.audio_path).resolve()), "rb") as wf:
                 params = wf.getparams()
-                if base_params is None:
-                    base_params = params
-                    frames = wf.readframes(params.nframes)
-                else:
-                    if (params.nchannels, params.sampwidth, params.framerate) != (
-                        base_params.nchannels,
-                        base_params.sampwidth,
-                        base_params.framerate,
-                    ):
-                        skipped_format.append(
-                            (
-                                seg.segment_id,
-                                f"format mismatch "
-                                f"(got ch={params.nchannels} sw={params.sampwidth} fr={params.framerate}; "
-                                f"base ch={base_params.nchannels} sw={base_params.sampwidth} fr={base_params.framerate})",
-                            )
+                frames = wf.readframes(params.nframes)
+            if base_params is None:
+                base_params = params
+            else:
+                # 位深 / 声道不一致 → 跳过（audioop.ratecv 不处理这两个维度）
+                if (params.sampwidth, params.nchannels) != (
+                    base_params.sampwidth, base_params.nchannels,
+                ):
+                    skipped_format.append(
+                        (
+                            seg.segment_id,
+                            f"format mismatch "
+                            f"(got ch={params.nchannels} sw={params.sampwidth}; "
+                            f"base ch={base_params.nchannels} sw={base_params.sampwidth})",
                         )
-                        continue
-                    frames = wf.readframes(params.nframes)
+                    )
+                    continue
+                # 采样率不一致 → 重采样到基准采样率（v3：支持多 backend 混合）
+                if params.framerate != base_params.framerate:
+                    frames, _ = audioop.ratecv(
+                        frames,
+                        base_params.sampwidth,
+                        base_params.nchannels,
+                        params.framerate,
+                        base_params.framerate,
+                        None,
+                    )
+                    resampled.append(
+                        (seg.segment_id, f"{params.framerate}→{base_params.framerate} Hz")
+                    )
+                    # 重采样后帧数变化，更新本段实际帧数（不影响 base_params）
+                    new_nframes = len(frames) // (base_params.sampwidth * base_params.nchannels)
+                    params = params._replace(framerate=base_params.framerate, nframes=new_nframes)
             pause_s = float(pause_map.get(seg.segment_id, 0.0) or 0.0)
             if pause_s < 0:
                 pause_s = 0.0
