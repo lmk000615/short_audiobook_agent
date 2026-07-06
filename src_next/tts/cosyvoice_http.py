@@ -364,9 +364,11 @@ class CosyVoiceHTTPAdapter(BaseTTSAdapter):
                         error=f"server returned empty/invalid wav ({len(wav_bytes) if wav_bytes else 0} bytes)",
                     ))
                     continue
-                # 直接落盘（PCM 转换留给消费方；mock 测试用 raw 字节，真服务返回的
-                # 是 IEEE float wav，audio_merger 那侧目前能处理）
-                out_wav.write_bytes(wav_bytes)
+                # CosyVoice3 server 默认返回 IEEE float wav（format=3）；
+                # audio_merger 用 stdlib wave 只能读 PCM format=1。
+                # 必须转 PCM_16，否则多 adapter 拼接时格式不一致会被跳段。
+                # 与 _synthesize_legacy 一致（_synthesize_one 也走 _save_wav_pcm16）。
+                self._save_wav_pcm16(wav_bytes, out_wav)
                 results.append(AudioSegmentResult(
                     segment_id=seg_id, speaker=inst.speaker,
                     audio_path=str(out_wav), success=True, error="",

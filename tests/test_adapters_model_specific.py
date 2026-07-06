@@ -101,6 +101,26 @@ def test_cosyvoice_synthesize_routes_to_legacy_when_input_is_legacy(
         mock_ms.assert_not_called()
 
 
+def _make_minimal_pcm16_wav() -> bytes:
+    """造一个最小合法 PCM_16 wav 字节流（44 字节头 + 100 帧零数据）。
+
+    用于 mock HTTP 返回——之前用 b"RIFF...wav" 不合法，soundfile 会炸，
+    导致 cosyvoice _synthesize_model_specific 绕开了 _save_wav_pcm16 转换
+    （直接 write_bytes），引入了 production bug：新链路 wav 格式不统一
+    让 audio_merger 跳段。让 mock wav 合法 = 测试和生产数据形状一致。
+    """
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 100)
+    return buf.getvalue()
+
+
 def test_cosyvoice_model_specific_passes_through_parameters(
     cosyvoice_adapter, model_specific_instructions, voicebank_result, tmp_path
 ):
@@ -111,8 +131,10 @@ def test_cosyvoice_model_specific_passes_through_parameters(
     def fake_http_post(url, **kwargs):
         captured_request["url"] = url
         captured_request.update(kwargs)
-        # 返回最小合法 wav 字节（够过长度检查，写盘用 write_bytes 不解码）
-        return MagicMock(content=b"RIFF" + b"\x00" * 40 + b"wav", status_code=200, headers={})
+        # 返回合法 PCM_16 wav（不是随便的字节流），让 _save_wav_pcm16 能跑通
+        return MagicMock(
+            content=_make_minimal_pcm16_wav(), status_code=200, headers={},
+        )
 
     with patch("src_next.tts.cosyvoice_http.requests.post", side_effect=fake_http_post):
         cosyvoice_adapter._synthesize_model_specific(
@@ -127,6 +149,43 @@ def test_cosyvoice_model_specific_passes_through_parameters(
         # instruct_text '用平静的语气说' 应该被拼进 prompt_text
         assert any("平静" in str(v) for v in request_data.values()), (
             f"instruct_text '用平静的语气说' 未体现在 HTTP 请求：{request_data}"
+        )
+
+
+def test_cosyvoice_model_specific_writes_pcm16_not_raw_float(
+    cosyvoice_adapter, model_specific_instructions, voicebank_result, tmp_path
+):
+    """回归保护：cosyvoice _synthesize_model_specific 必须调 _save_wav_pcm16
+    把 server 返回的 IEEE float wav 转 PCM_16，不能直接 write_bytes。
+
+    背景：之前为绕开 mock wav 让 soundfile 炸，新链路直接 write_bytes，
+    导致新链路 cosyvoice 输出 IEEE float wav，s2pro/indextts 输出 PCM_16，
+    audio_merger 因格式不一致跳段，final wav 只含 1 段。
+
+    依赖 soundfile + numpy（_save_wav_pcm16 内部 lazy import），蓝区
+    未装这两个 deps 时跳过；黄区装了，正常跑。
+    """
+    pytest.importorskip("soundfile")  # _save_wav_pcm16 用，蓝区跳过
+
+    import wave
+
+    with patch(
+        "src_next.tts.cosyvoice_http.requests.post",
+        return_value=MagicMock(
+            content=_make_minimal_pcm16_wav(), status_code=200, headers={},
+        ),
+    ):
+        cosyvoice_adapter._synthesize_model_specific(
+            model_specific_instructions, voicebank_result, str(tmp_path), dry_run=False
+        )
+
+    # 验证落盘 wav 能被 stdlib wave 读，且是 PCM_16 (sampwidth=2)
+    out_wav = tmp_path / "audio_segments" / "seg_001.wav"
+    assert out_wav.exists(), f"wav 未落盘：{out_wav}"
+    with wave.open(str(out_wav), "rb") as wf:
+        assert wf.getsampwidth() == 2, (
+            f"落盘 wav 不是 PCM_16 (sampwidth=2)，实际 sampwidth={wf.getsampwidth()}"
+            "——可能 _synthesize_model_specific 又绕开了 _save_wav_pcm16"
         )
 
 
