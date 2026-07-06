@@ -211,6 +211,57 @@ def test_s2pro_model_specific_passes_through_inline_tags(
     )
 
 
+def test_s2pro_model_specific_reads_prompt_text_when_voice_ref_exists(
+    s2pro_adapter, s2pro_model_specific_instructions, voicebank_result, tmp_path
+):
+    """voice_ref 文件存在时，应触发 _get_prompt_text_for_voice 读同名 .txt 转写。
+
+    回归保护：之前 _get_prompt_text_for_voice 用 self.extra_args.get(...)，
+    但 S2ProTTSAdapter.__init__ 不存 self.extra_args → AttributeError。
+    黄区端到端测试暴露（蓝区单测的 fixture voice_ref 不存在 → 跳过该路径）。
+    """
+    import wave
+
+    # 造一个真的 wav 文件 + 同名 .txt 转写
+    voice_ref_path = tmp_path / "voicebank" / "xiaosongshu.wav"
+    voice_ref_path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(voice_ref_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 100)
+    voice_ref_path.with_suffix(".txt").write_text(
+        "活泼小女孩的参考音频转写", encoding="utf-8",
+    )
+
+    # 改 instruction 的 voice_ref 指向真实 tmp_path
+    inst = s2pro_model_specific_instructions[0]
+    inst.voice_ref = str(voice_ref_path)
+
+    captured: dict = {}
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(content=b"RIFF" + b"\x00" * 40 + b"wav", status_code=200)
+
+    with patch("src_next.tts.s2pro_adapter.requests.post", side_effect=fake_post):
+        s2pro_adapter._synthesize_model_specific(
+            s2pro_model_specific_instructions,
+            voicebank_result,
+            str(tmp_path),
+            dry_run=False,
+        )
+
+    data = captured.get("data") or {}
+    # 同名 .txt 被读到 prompt_text 字段
+    assert "活泼小女孩" in data.get("prompt_text", ""), (
+        f"_get_prompt_text_for_voice 未读 .txt 转写：{data}"
+    )
+    assert data.get("enable_reference_audio") == "true", (
+        f"reference_audio 字段未透传：{data}"
+    )
+
+
 # ── IndexTTS adapter 双接口测试（任务 8） ──────────────────────────
 
 

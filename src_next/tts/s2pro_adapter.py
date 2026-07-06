@@ -548,12 +548,14 @@ class S2ProTTSAdapter(BaseTTSAdapter):
         """取 voice_ref wav 对应的转写文本（用于 S2Pro prompt_text）。
 
         voicebank 生成的 wav 通常伴随同名的 .txt 文件（转写），读取它。
-        找不到则 fallback 到 profile extra_args.reference_text。
+        找不到则 fallback 到 self.prompt_text（__init__ 时已从 extra_args.prompt_text
+        或 extra_args.reference_text 解出）。不直接读 self.extra_args，因为
+        S2ProTTSAdapter.__init__ 没存 extra_args 字段（与 cosyvoice/indextts 不同）。
         """
         txt_path = Path(voice_ref).with_suffix(".txt")
         if txt_path.exists():
             return txt_path.read_text(encoding="utf-8").strip()
-        return str(self.extra_args.get("reference_text", "") or "")
+        return self.prompt_text
 
     def _synthesize_one_via_http(
         self,
