@@ -31,6 +31,11 @@ backends:
       max_workers: 4
       enable_reference_audio: true
       enable_inline_tags: true
+      # S2Pro 8010 硬性要求：上传 reference_audio 时必须同时传 prompt_text（参考音频的转写文本）。
+      # 值必须与 voicebank（Qwen3 VoiceDesign）生成参考音频时使用的文本完全一致，
+      # 否则 server 返回 400 "prompt_text is required when reference_audio is provided"。
+      # _get_prompt_text_for_voice 在 voice_ref.wav 同名 .txt 不存在时 fallback 到本字段。
+      reference_text: "你好，欢迎使用语音设计功能，这是一个测试句子。"
       timeout_per_seg: 300
       bypass_proxy: true
 
