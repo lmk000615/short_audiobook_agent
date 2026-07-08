@@ -1,0 +1,17 @@
+id: emotion_shift_04
+category: emotion_shift
+test_purpose: "压测句内情绪转折（失望→惊喜）：主角自语'原以为没希望了…'失落开头，看见下文后'等等！…我入选了？！'狂喜反转。"
+expected_speaker_count: 2
+expected_challenges:
+  - "对白'原以为没希望了……'情绪=失望"
+  - "对白'……等等！信里还有一行字！'情绪=惊喜（反转触发）"
+  - "对白'我入选了？！'情绪=狂喜/震惊"
+  - "三段对白连续情绪升级（失望→惊喜→狂喜）"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 203
+tags:
+  - "情绪转折"
+  - "失望转惊喜"
+  - "反转"
+  - "三段情绪升级"

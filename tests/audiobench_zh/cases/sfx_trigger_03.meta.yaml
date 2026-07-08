@@ -1,0 +1,21 @@
+id: sfx_trigger_03
+category: sfx_trigger
+test_purpose: "压测段内/段间音效触发：自然语言埋入 4 个突发声音事件（杯落/玻璃碎/椅子拖/急步），考验短促音效与对话穿插。"
+expected_speaker_count: 4
+expected_challenges:
+  - "声音事件：'咣当'杯子落地（突发）"
+  - "声音事件：'哐啷'玻璃碎（突发清脆）"
+  - "声音事件：'吱——'椅子腿拖地（长音）"
+  - "声音事件：'啪嗒啪嗒'急步（连续快节奏）"
+  - "音效触发后立即转入对话（'怎么了？''糟了糟了！'）"
+  - "三人对话（爸/姐/妈）穿插音效描述"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 3
+char_count: 285
+tags:
+  - "音效"
+  - "杯落"
+  - "玻璃碎"
+  - "椅子挪"
+  - "急步"
+  - "客厅意外"

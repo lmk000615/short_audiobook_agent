@@ -1,0 +1,16 @@
+id: emotion_shift_01
+category: emotion_shift
+test_purpose: "压测句内情绪转折（惊喜→失落）：同一角色（小军）单段对白'太好了！……'惊喜开头，下一段'……可是我朋友没过。'失落收尾。"
+expected_speaker_count: 3
+expected_challenges:
+  - "对白'太好了！我……'情绪=惊喜，未完成"
+  - "对白'……可是我朋友没过。'情绪=失落（同一角色下一段）"
+  - "省略号开头标记情绪低落转换"
+  - "导演指令需在两段对话中给出不同的 emotion / pace / volume"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 198
+tags:
+  - "情绪转折"
+  - "惊喜转失落"
+  - "省略号情绪标记"

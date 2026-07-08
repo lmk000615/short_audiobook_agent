@@ -1,0 +1,22 @@
+id: sfx_trigger_02
+category: sfx_trigger
+test_purpose: "压测段内/段间音效触发：自然语言埋入 5 个声音事件（雨打窗/雷/风/屋檐水/雨溅），全部为持续环境音，考验音效分类与叠加。"
+expected_speaker_count: 3
+expected_challenges:
+  - "声音事件：'滴答滴答'雨打窗（持续）"
+  - "声音事件：'轰隆隆''轰隆''轰隆'雷声（多次）"
+  - "声音事件：'嗡嗡响'玻璃震（共振）"
+  - "声音事件：'呼呼地从窗缝里钻进来'风（突变）"
+  - "声音事件：'哗啦哗啦'屋檐水（持续）"
+  - "声音事件：'啪嗒啪嗒'雨水溅（持续）"
+  - "音效穿插在祖孙对话中，考验段内定位"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 329
+tags:
+  - "音效"
+  - "雨声"
+  - "雷声"
+  - "风声"
+  - "屋檐水"
+  - "祖孙夜话"

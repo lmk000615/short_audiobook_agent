@@ -1,0 +1,16 @@
+id: speaker_hard_02
+category: speaker_hard
+test_purpose: "压测引号嵌套：外层「」智能双引号包裹整段对白，内层「」直角引号是转述第三人的话。segment_builder 应只切外层，内层「」保留在文本中。"
+expected_speaker_count: 3
+expected_challenges:
+  - "外层「」内含「」的引号嵌套，segment_builder 只切外层"
+  - "内层「」是王老师的话，story_resolver 需理解转述关系（说话人仍是小张）"
+  - "对白'真的假的？'和'那咱们班是不是也要发奖金？'省略说话人（小李）"
+  - "对白'……'+摇头动作，需识别为小张的回应"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 207
+tags:
+  - "引号嵌套"
+  - "转述"
+  - "智能双引号+直角引号"

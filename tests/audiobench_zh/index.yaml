@@ -1,0 +1,197 @@
+# Audiobench zh v1 索引
+# 共 30 条中文短篇故事测试样例，用于压测 src_next/ 有声书生成链路。
+# 字段：id / category / char_count / difficulty / test_purpose
+# 详细埋点和 expected_challenges 见 cases/<id>.meta.yaml
+
+version: 1
+total: 30
+categories:
+  basic_children: 4
+  multi_role_dialog: 4
+  speaker_hard: 4
+  emotion_shift: 4
+  strong_emotion: 4
+  long_memory: 3
+  tts_frontend: 3
+  sfx_trigger: 4
+
+cases:
+  - id: basic_children_01
+    category: basic_children
+    char_count: 218
+    difficulty: 2
+    test_purpose: "压测引号嵌套：外层智能双引号内含 ASCII 单引号引用，segment_builder 只切外层，内层字符引用应整体保留在 dialogue 文本中。"
+
+  - id: basic_children_02
+    category: basic_children
+    char_count: 205
+    difficulty: 2
+    test_purpose: "压测说话人后置 + 中间插入动作：对白先出现，说话人和动作描写放在后置位置，story_resolver 需正确归属。"
+
+  - id: basic_children_03
+    category: basic_children
+    char_count: 251
+    difficulty: 3
+    test_purpose: "压测拟声词引号陷阱：'咕嘟咕嘟'和'哗啦'用智能双引号包裹，应被 quote_classifier 判为 quoted_term 合并回 narration，而非 dialogue。"
+
+  - id: basic_children_04
+    category: basic_children
+    char_count: 224
+    difficulty: 3
+    test_purpose: "压测省略说话人对白 + 书名号：'下课了！'前后无明确说话人，靠上下文判断（猫头鹰老师）；《咏鹅》用书名号不应被切。"
+
+  - id: multi_role_dialog_01
+    category: multi_role_dialog
+    char_count: 277
+    difficulty: 3
+    test_purpose: "压测多角色省略说话人：5+ 轮对白中只有部分写明说话人，其余靠人称/口吻/上下文判断。"
+
+  - id: multi_role_dialog_02
+    category: multi_role_dialog
+    char_count: 304
+    difficulty: 3
+    test_purpose: "压测师徒角色互称：师傅自称'为师'，徒弟互称'师兄/师弟'并尊称'师傅'，连续 7 轮对白中后 5 轮完全靠称谓判断说话人。"
+
+  - id: multi_role_dialog_03
+    category: multi_role_dialog
+    char_count: 258
+    difficulty: 4
+    test_purpose: "压测同时开口重叠对白：3 个孩子吵架场景，前 4 轮对白全部不写说话人，靠上下文 + 老师介入后明确归属。"
+
+  - id: multi_role_dialog_04
+    category: multi_role_dialog
+    char_count: 303
+    difficulty: 4
+    test_purpose: "压测家庭场景 5 speaker：爸妈姐弟 4 人 + 旁白，对白穿插日常动作（夹菜/盛汤），靠话题切换判断说话人。"
+
+  - id: speaker_hard_01
+    category: speaker_hard
+    char_count: 221
+    difficulty: 5
+    test_purpose: "压测说话人后置、前置倒装、空对白：连续多次出现「对白+动作描写+说话人」结构，story_resolver 需靠动作主语反推。"
+
+  - id: speaker_hard_02
+    category: speaker_hard
+    char_count: 207
+    difficulty: 4
+    test_purpose: "压测引号嵌套：外层智能双引号包裹整段对白，内层直角引号是转述第三人的话。segment_builder 应只切外层。"
+
+  - id: speaker_hard_03
+    category: speaker_hard
+    char_count: 224
+    difficulty: 4
+    test_purpose: "压测长旁白后孤对白：连续 3 段长旁白后突然出现无主语对白「……谁？」，靠下一段'老林猛地回过头'反推。"
+
+  - id: speaker_hard_04
+    category: speaker_hard
+    char_count: 247
+    difficulty: 4
+    test_purpose: "压测心理活动 vs 自言自语对白：同一角色 3 个引号，应分别被判 inner_thought / dialogue / inner_thought，考验 quote_classifier 区分能力。"
+
+  - id: emotion_shift_01
+    category: emotion_shift
+    char_count: 198
+    difficulty: 4
+    test_purpose: "压测句内情绪转折（惊喜→失落）：同一角色单段对白惊喜开头，下一段失落收尾。"
+
+  - id: emotion_shift_02
+    category: emotion_shift
+    char_count: 201
+    difficulty: 4
+    test_purpose: "压测句内情绪转折（愤怒→软下来）：妈妈前 3 句连续暴怒，看见纸条后最后一句明显软下来。"
+
+  - id: emotion_shift_03
+    category: emotion_shift
+    char_count: 202
+    difficulty: 4
+    test_purpose: "压测句内情绪转折（害怕→坚定）：同一角色两段对白，第一段害怕，第二段坚定。"
+
+  - id: emotion_shift_04
+    category: emotion_shift
+    char_count: 203
+    difficulty: 4
+    test_purpose: "压测句内情绪转折（失望→惊喜）：主角自语失落开头，看见下文后狂喜反转。"
+
+  - id: strong_emotion_01
+    category: strong_emotion
+    char_count: 209
+    difficulty: 3
+    test_purpose: "压测暴怒情绪对白：父亲连续短促反问，多次'？！'组合感叹号，punctuation 节奏急促。"
+
+  - id: strong_emotion_02
+    category: strong_emotion
+    char_count: 244
+    difficulty: 4
+    test_purpose: "压测大哭情绪对白：拟声词'呜呜'+'呜——'，断续对白（省略号穿插），重复'你这个傻孩子'。"
+
+  - id: strong_emotion_03
+    category: strong_emotion
+    char_count: 213
+    difficulty: 4
+    test_purpose: "压测惊恐情绪对白：拟声词'嗷——'+'咔嚓'，短促惊问'谁？！谁在那里？！'，断续'别……别过来……'。"
+
+  - id: strong_emotion_04
+    category: strong_emotion
+    char_count: 244
+    difficulty: 3
+    test_purpose: "压测狂喜情绪对白：'哈哈！''是我！是我！'连续感叹，重复'我赢了'，多人齐呼。"
+
+  - id: long_memory_01
+    category: long_memory
+    char_count: 424
+    difficulty: 4
+    test_purpose: "压测长文本角色一致性：主角周师傅在 5 段中保持口癖'慢点'和'咱们/活儿/使劲儿'等老派用词。"
+
+  - id: long_memory_02
+    category: long_memory
+    char_count: 426
+    difficulty: 4
+    test_purpose: "压测长文本角色一致性：主角老渔夫在 6 段中保持对海的拟人化称呼'她'和反复念叨'她今天不高兴'。"
+
+  - id: long_memory_03
+    category: long_memory
+    char_count: 458
+    difficulty: 4
+    test_purpose: "压测长文本角色一致性：主角班长小薇在 8 段中保持鼓励式语气'别担心，有我呢'和习惯先问'你叫什么名字'。"
+
+  - id: tts_frontend_01
+    category: tts_frontend
+    char_count: 360
+    difficulty: 5
+    test_purpose: "压测 TTS 前端数字/日期/时间/单位读法：含 6+ 处日期时间、5+ 处大数字单位、3 处百分号。"
+
+  - id: tts_frontend_02
+    category: tts_frontend
+    char_count: 330
+    difficulty: 5
+    test_purpose: "压测 TTS 前端多音字+英文缩写+古文断句：含'行/重/朝'多音字、APP/AI/CPU 缩写、《将进酒》古诗句、序号数字。"
+
+  - id: tts_frontend_03
+    category: tts_frontend
+    char_count: 335
+    difficulty: 5
+    test_purpose: "压测 TTS 前端符号读法+罕见字+邮箱电话 URL：含 @ 邮箱、电话号码、URL、公式、罕见字（佼/梓）。"
+
+  - id: sfx_trigger_01
+    category: sfx_trigger
+    char_count: 304
+    difficulty: 3
+    test_purpose: "压测段内/段间音效触发：自然语言埋入 4 个声音事件（敲门/脚步/门轴/风灌入）。"
+
+  - id: sfx_trigger_02
+    category: sfx_trigger
+    char_count: 329
+    difficulty: 4
+    test_purpose: "压测段内/段间音效触发：自然语言埋入 5 个声音事件（雨打窗/雷/风/屋檐水/雨溅）。"
+
+  - id: sfx_trigger_03
+    category: sfx_trigger
+    char_count: 285
+    difficulty: 3
+    test_purpose: "压测段内/段间音效触发：自然语言埋入 4 个突发声音事件（杯落/玻璃碎/椅子拖/急步）。"
+
+  - id: sfx_trigger_04
+    category: sfx_trigger
+    char_count: 318
+    difficulty: 4
+    test_purpose: "压测段内/段间音效触发：自然语言埋入 5 个声音事件（鸟叫/树叶沙沙/远兽/树叶哗啦/踩断枝）。"

@@ -1,0 +1,19 @@
+id: long_memory_03
+category: long_memory
+test_purpose: "压测长文本角色一致性：主角班长小薇在 8 段中保持鼓励式语气'别担心，有我呢'和习惯先问'你叫什么名字'，character 档案应稳定。"
+expected_speaker_count: 4
+expected_challenges:
+  - "口癖'别担心，有我呢'在 8 段中出现 3 次"
+  - "习惯先问名字'你叫什么名字？'"
+  - "性格一致性：温和、主动、鼓励式"
+  - "8 段长上下文，跨度大（早晨→中午→放学）"
+  - "多人对话（小薇/林一/班主任/其他同学）"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 458
+tags:
+  - "长文本"
+  - "角色一致性"
+  - "鼓励式语气"
+  - "校园"
+  - "8 段长跨度"

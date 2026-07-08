@@ -1,0 +1,17 @@
+id: emotion_shift_03
+category: emotion_shift
+test_purpose: "压测句内情绪转折（害怕→坚定）：同一角色（小宁）两段对白，第一段'我害怕…这条路怎么这么长'，第二段'…但我要自己走完'。"
+expected_speaker_count: 2
+expected_challenges:
+  - "对白'……我害怕。……这条路怎么这么长……'情绪=害怕"
+  - "对白'……但我要自己走完。我不再回头看了。'情绪=坚定（转折）"
+  - "情绪转折在同一角色跨段对白中体现"
+  - "省略号+语气副词（'可是/但是'）触发情绪切换"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 202
+tags:
+  - "情绪转折"
+  - "害怕转坚定"
+  - "夜路独白"
+  - "自我鼓励"

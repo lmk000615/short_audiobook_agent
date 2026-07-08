@@ -1,0 +1,17 @@
+id: multi_role_dialog_03
+category: multi_role_dialog
+test_purpose: "压测同时开口重叠对白：3 个孩子吵架场景，前 4 轮对白全部不写说话人，靠上下文 + 老师介入后明确归属。"
+expected_speaker_count: 4
+expected_challenges:
+  - "前 4 轮短对白（'我先到的！'等）全部省略说话人"
+  - "老师介入后 3 个孩子向老师告状，仍需靠'他们俩'等代词区分"
+  - "末段 3 个连续提议无说话人标记"
+  - "标点策略：连续感叹号、问号"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 258
+tags:
+  - "多角色"
+  - "重叠对白"
+  - "代词区分"
+  - "儿童冲突"

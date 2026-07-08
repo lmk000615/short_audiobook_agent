@@ -1,0 +1,16 @@
+id: multi_role_dialog_02
+category: multi_role_dialog
+test_purpose: "压测师徒角色互称：师傅自称'为师'，徒弟互称'师兄/师弟'并尊称'师傅'，连续 7 轮对白中后 5 轮完全靠称谓判断说话人。"
+expected_speaker_count: 4
+expected_challenges:
+  - "师傅自称'为师'需正确归属到师傅"
+  - "'师兄太胆小了'是小徒弟说的，靠'师兄'反推"
+  - "'师弟，江湖上的传闻'是大徒弟说的，靠'师弟'反推"
+  - "ASCII 单引号 ' 包裹的'不太平'需保留在文本中"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 3
+char_count: 304
+tags:
+  - "多角色"
+  - "称谓判断"
+  - "师徒语境"

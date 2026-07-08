@@ -1,0 +1,15 @@
+id: basic_children_04
+category: basic_children
+test_purpose: "压测省略说话人对白 + 书名号：'下课了！'前后无明确说话人，靠上下文判断（猫头鹰老师）；《咏鹅》用书名号不应被切。"
+expected_speaker_count: 3
+expected_challenges:
+  - "'下课了！'单独成段，前后无说话人标记"
+  - "书名号《咏鹅》不应被 segment_builder 切成 dialogue"
+  - "末段连续两次对白（妈妈问 + 小熊答）"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 3
+char_count: 224
+tags:
+  - "儿童故事"
+  - "省略说话人"
+  - "书名号"

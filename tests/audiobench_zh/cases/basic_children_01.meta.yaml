@@ -1,0 +1,15 @@
+id: basic_children_01
+category: basic_children
+test_purpose: "压测引号嵌套：外层智能双引号内含 ASCII 单引号引用，segment_builder 只切外层，内层字符引用应整体保留在 dialogue 文本中。"
+expected_speaker_count: 3
+expected_challenges:
+  - "外层「」与内层'' 引号嵌套，内层不应被切开"
+  - "ASCII 单引号 ' 必须原样保留在 dialogue 文本中"
+  - "段落 1 旁白较长，与对白 1 段形成切换"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 2
+char_count: 218
+tags:
+  - "儿童故事"
+  - "引号嵌套"
+  - "ASCII单引号"

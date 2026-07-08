@@ -1,0 +1,19 @@
+id: long_memory_02
+category: long_memory
+test_purpose: "压测长文本角色一致性：主角老渔夫在 6 段中保持对海的拟人化称呼'她'和反复念叨'她今天不高兴/她今天高兴'，character 档案应稳定保留这一特征。"
+expected_speaker_count: 4
+expected_challenges:
+  - "海的拟人化称呼'她'在 6 段中出现 6+ 次"
+  - "反复念叨'她今天不高兴/高兴'需稳定识别"
+  - "性格一致性：稳重、敬畏自然、寡言"
+  - "代词'她'指代海而非人物，speaker 归属需识别"
+  - "对比对白（老人 vs 小伙子）语气差异"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 426
+tags:
+  - "长文本"
+  - "角色一致性"
+  - "拟人化"
+  - "渔夫语境"
+  - "代词指代"

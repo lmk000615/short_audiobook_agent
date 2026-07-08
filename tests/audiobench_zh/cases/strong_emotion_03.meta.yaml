@@ -1,0 +1,20 @@
+id: strong_emotion_03
+category: strong_emotion
+test_purpose: "压测惊恐情绪对白：拟声词'嗷——'+'咔嚓'，短促惊问'谁？！谁在那里？！'，断续'别……别过来……'，TTS 应识别为颤音 + 低 volume + 急促呼吸。"
+expected_speaker_count: 2
+expected_challenges:
+  - "拟声词'嗷——'长嚎叫（动物声音）"
+  - "拟声词'咔嚓'短促（踩断树枝）"
+  - "对白'什……什么东西？'断续颤抖"
+  - "对白'谁？！谁在那里？！'连续惊问"
+  - "对白'……别……别过来……'极度恐惧"
+  - "导演指令 emotion=fear，volume=low（颤抖低语），tense/breath"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 213
+tags:
+  - "强情绪"
+  - "惊恐"
+  - "拟声词"
+  - "断续对白"
+  - "夜间独白"

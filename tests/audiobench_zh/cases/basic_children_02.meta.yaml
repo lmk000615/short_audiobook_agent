@@ -1,0 +1,15 @@
+id: basic_children_02
+category: basic_children
+test_purpose: "压测说话人后置 + 中间插入动作：对白先出现，说话人和动作描写放在后置位置，story_resolver 需正确归属。"
+expected_speaker_count: 2
+expected_challenges:
+  - "对白在前，说话人('小兔')后置"
+  - "对白中插入动作描写后继续延伸同一句对白"
+  - "省略主语的对白段('原来是你呀！')"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 2
+char_count: 205
+tags:
+  - "儿童故事"
+  - "说话人后置"
+  - "省略主语"

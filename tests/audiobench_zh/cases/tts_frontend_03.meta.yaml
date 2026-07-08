@@ -1,0 +1,21 @@
+id: tts_frontend_03
+category: tts_frontend
+test_purpose: "压测 TTS 前端符号读法+罕见字+邮箱电话 URL：含 @ 邮箱、电话号码、URL、公式、罕见字（佼/梓）、百分号。"
+expected_speaker_count: 3
+expected_challenges:
+  - "邮箱'chenzong@xinyuan.com'需读'at'和点号"
+  - "电话'138-1234-5678'需正确分组读"
+  - "URL'www.xinyuan.cn'需读'点点点/玄信园点西恩'"
+  - "公式'5+5=10'需读'五加五等于十'"
+  - "罕见字'佼佼（jiǎo）/梓（zǐ）'需正确"
+  - "百分号'130%'需读'百分之一百三十'"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 5
+char_count: 335
+tags:
+  - "TTS前端"
+  - "邮箱"
+  - "电话"
+  - "URL"
+  - "罕见字"
+  - "公式"

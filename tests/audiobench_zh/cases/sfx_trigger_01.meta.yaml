@@ -1,0 +1,21 @@
+id: sfx_trigger_01
+category: sfx_trigger
+test_purpose: "压测段内/段间音效触发：自然语言埋入 4 个声音事件（敲门/脚步/门轴/风灌入），未来音效规划 stage 应能识别并定位触发词。"
+expected_speaker_count: 3
+expected_challenges:
+  - "声音事件：'咚、咚、咚'敲门（3 声）"
+  - "声音事件：'哒、哒、哒'脚步（连续）"
+  - "声音事件：'吱呀一声'门轴（一次性）"
+  - "声音事件：'呜呜地刮着屋檐'风（环境）"
+  - "声音事件：'风从缝隙里灌了进来'（突变）"
+  - "对白与音效在同一/相邻段内交替"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 3
+char_count: 304
+tags:
+  - "音效"
+  - "敲门"
+  - "脚步"
+  - "门轴"
+  - "风声"
+  - "深夜访客"

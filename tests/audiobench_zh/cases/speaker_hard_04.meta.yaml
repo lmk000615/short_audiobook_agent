@@ -1,0 +1,18 @@
+id: speaker_hard_04
+category: speaker_hard
+test_purpose: "压测心理活动 vs 自言自语对白：同一角色（林薇）3 个引号，应分别被判 inner_thought / dialogue / inner_thought，考验 quote_classifier 区分能力。"
+expected_speaker_count: 2
+expected_challenges:
+  - "引号 1（'心想'引导）应判 inner_thought"
+  - "引号 2（'自言自语地开口'引导）应判 dialogue"
+  - "引号 3（'在心里默默念叨'引导）应判 inner_thought"
+  - "3 个引号全为同一角色，speaker 一致但 segment_type 不同"
+  - "末段环境描写（夜班公交车）收束情绪"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 247
+tags:
+  - "心理活动"
+  - "inner_thought"
+  - "自言自语"
+  - "单角色多变"

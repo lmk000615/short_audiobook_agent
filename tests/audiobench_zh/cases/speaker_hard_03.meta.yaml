@@ -1,0 +1,17 @@
+id: speaker_hard_03
+category: speaker_hard
+test_purpose: "压测长旁白后孤对白：连续 3 段长旁白后突然出现「「……谁？」」无主语对白，靠下一段'老林猛地回过头'反推。"
+expected_speaker_count: 2
+expected_challenges:
+  - "前 3 段连续旁白共 200+ 字，无对白"
+  - "对白'……谁？'独立成段，无说话人前后置标记"
+  - "对白'……是我看花眼了吧。'后置说话人（'他低声自语'）"
+  - "省略号开头表示迟疑/惊疑"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 224
+tags:
+  - "长旁白"
+  - "孤对白"
+  - "省略号开头"
+  - "自语"

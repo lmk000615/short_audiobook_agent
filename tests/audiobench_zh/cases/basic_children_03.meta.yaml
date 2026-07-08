@@ -1,0 +1,15 @@
+id: basic_children_03
+category: basic_children
+test_purpose: "压测拟声词引号陷阱：'咕嘟咕嘟'和'哗啦'用智能双引号包裹，应被 quote_classifier 判为 quoted_term 合并回 narration，而非 dialogue。"
+expected_speaker_count: 3
+expected_challenges:
+  - "拟声词引号('咕嘟咕嘟')不应误判为对白"
+  - "拟声词引号('哗啦')不应误判为对白"
+  - "旁白与对白穿插，节奏切换频繁"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 3
+char_count: 251
+tags:
+  - "儿童故事"
+  - "拟声词"
+  - "引号陷阱"

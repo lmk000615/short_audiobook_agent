@@ -1,0 +1,16 @@
+id: multi_role_dialog_01
+category: multi_role_dialog
+test_purpose: "压测多角色省略说话人：5+ 轮对白中只有部分写明说话人，其余靠人称/口吻/上下文判断（如'你个子高当然不怕'是小兔对小鹿说的）。"
+expected_speaker_count: 4
+expected_challenges:
+  - "对白'你个子高当然不怕，我怎么办？'省略说话人，靠人称('你/我')判断"
+  - "对白'那人家小鹿驮你过去不就行了？'省略说话人"
+  - "对白'驮我可以'省略说话人（小鹿回应）"
+  - "对白'那我呢？'省略说话人（小松鼠插话）"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 3
+char_count: 277
+tags:
+  - "多角色"
+  - "省略说话人"
+  - "人称判断"

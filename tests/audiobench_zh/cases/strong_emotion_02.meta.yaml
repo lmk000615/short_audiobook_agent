@@ -1,0 +1,19 @@
+id: strong_emotion_02
+category: strong_emotion
+test_purpose: "压测大哭情绪对白：拟声词'呜呜'+'呜——'，断续对白（省略号穿插），重复'你这个傻孩子'，TTS 应识别为哭腔 + 慢 pace + 颤音。"
+expected_speaker_count: 3
+expected_challenges:
+  - "对白'呜呜……妈妈，对不起……呜呜……'拟声词+断续"
+  - "对白'你这个傻孩子！你这个傻孩子！'重复"
+  - "对白'呜——妈妈——'长音破折号"
+  - "导演指令 emotion=sad，pace=slow，volume 情绪化起伏"
+  - "拟声词引号('呜呜')不应误判为对白主体，但本处是人物实际哭声（dialogue）"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 244
+tags:
+  - "强情绪"
+  - "大哭"
+  - "拟声词"
+  - "断续对白"
+  - "重复"
