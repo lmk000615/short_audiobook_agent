@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from src_next.core.data_models import ModelSpecificTTSInstruction, Segment
+from src_next.core.data_models import CriticResult, ModelSpecificTTSInstruction, Segment
 
 
 def test_critic_can_be_constructed_with_defaults():
@@ -38,19 +38,26 @@ def _make_segment_and_instruction():
     return seg, inst
 
 
+_FAKE_NESTED_RESPONSE_TEXT = (
+    '{"scores": {'
+    '"quality": {"score": 8.5, "grade": "A", "reason": "清晰干净", "problems": []},'
+    '"emotion_alignment": {"score": 8.0, "grade": "A", "reason": "情感匹配", "problems": []},'
+    '"character_consistency": {"score": 9.0, "grade": "A", "reason": "符合角色", "problems": []},'
+    '"rhythm_naturalness": {"score": 8.2, "grade": "A", "reason": "节奏自然", "problems": []},'
+    '"intelligibility": {"score": 9.5, "grade": "A", "reason": "字字清晰", "problems": []}'
+    '}, "overall_score": 8.6, "overall_grade": "A",'
+    ' "main_problems": [], "suggestions": ["音质清晰，情感表达可再增强一些。"]}'
+)
+
+
 class _FakeOkResponse:
-    """Minimal stand-in for requests.Response — 200 with valid scoring JSON."""
+    """Minimal stand-in for requests.Response — 200 with valid nested scoring JSON."""
     status_code = 200
 
     def json(self):
         return {
             "request_id": "fake-req-1",
-            "text": (
-                '{"quality":0.85,"emotion_alignment":0.80,'
-                '"character_consistency":0.90,"rhythm_naturalness":0.82,'
-                '"intelligibility":0.95,'
-                '"suggestions":"音质清晰，情感表达可再增强一些。"}'
-            ),
+            "text": _FAKE_NESTED_RESPONSE_TEXT,
         }
 
     @property
@@ -60,7 +67,7 @@ class _FakeOkResponse:
 
 
 def test_evaluate_returns_critic_result_on_success(monkeypatch):
-    """Mock 200 + valid scoring JSON → CriticResult with parsed scores."""
+    """Mock 200 + valid nested scoring JSON → CriticResult with parsed + normalized scores."""
     import src_next.critic.qwen3omni_critic as mod
 
     captured = {}
@@ -87,17 +94,20 @@ def test_evaluate_returns_critic_result_on_success(monkeypatch):
     assert "text" in captured["json"]  # scoring prompt
     assert captured["proxies"] == {"http": None, "https": None}
 
-    # Verify returned CriticResult
+    # Verify returned CriticResult — 0-10 scores normalized to 0-1
     assert result.segment_id == "s1"
-    assert 0.84 <= result.quality <= 0.86  # parsed from JSON
-    assert 0.94 <= result.intelligibility <= 0.96
-    assert 0.0 <= result.overall <= 1.0
+    assert 0.84 <= result.quality <= 0.86                  # 8.5/10
+    assert 0.79 <= result.emotion_alignment <= 0.81        # 8.0/10
+    assert 0.89 <= result.character_consistency <= 0.91    # 9.0/10
+    assert 0.81 <= result.rhythm_naturalness <= 0.83       # 8.2/10
+    assert 0.94 <= result.intelligibility <= 0.96          # 9.5/10
+    assert 0.85 <= result.overall <= 0.87                  # 8.6/10 (LLM overall_score override)
     assert isinstance(result.suggestions, str)
-    assert result.suggestions  # non-empty
+    assert "情感表达" in result.suggestions                # merged from suggestions list
 
 
 def test_critic_prompt_includes_expected_vs_actual_context():
-    """Prompt must contain original text, speaker, expected emotion, and 5-dim schema."""
+    """Prompt must contain original text, speaker, expected emotion, and strict grading rules."""
     from src_next.critic.prompts.critic_prompt import build_critic_prompt
 
     seg, inst = _make_segment_and_instruction()
@@ -113,5 +123,93 @@ def test_critic_prompt_includes_expected_vs_actual_context():
                 "rhythm_naturalness", "intelligibility"):
         assert dim in prompt
 
-    # Strict JSON schema embedded (Audio-Oscar §7.2)
-    assert "suggestions" in prompt
+    # Strict grading — A/B/C/D bands with explicit score ranges
+    assert "7.5 <= score" in prompt
+    assert "5.0 <= score" in prompt
+    assert "2.5 <= score" in prompt
+
+    # Forced deduction keywords (区段锁定)
+    assert "略夸张" in prompt
+    assert "7.4" in prompt
+    assert "4.9" in prompt
+    assert "2.4" in prompt
+
+    # Anti safe-scoring constraint
+    assert "大胆区分好坏" in prompt
+    assert "不要所有维度都集中在 7 或 8" in prompt
+
+    # Nested JSON schema keywords
+    for kw in ("scores", "grade", "problems", "main_problems",
+               "overall_score", "overall_grade", "suggestions"):
+        assert kw in prompt
+
+    # Hard constraints (建议规则) preserved
+    assert "绝对不要" in prompt
+    assert "text" in prompt
+    assert "speaker" in prompt
+    assert "model" in prompt
+
+    # Reasonable length
+    assert 200 <= len(prompt) <= 5000
+
+
+def test_from_json_legacy_flat_schema_still_works():
+    """from_json should still accept old flat 0-1 schema (backwards compat)."""
+    legacy = {
+        "segment_id": "s1",
+        "quality": 0.85,
+        "emotion_alignment": 0.80,
+        "character_consistency": 0.90,
+        "rhythm_naturalness": 0.82,
+        "intelligibility": 0.95,
+        # no "overall" key — should fall back to 5-dim average
+    }
+    result = CriticResult.from_json(legacy, attempt=1)
+    assert result.segment_id == "s1"
+    assert abs(result.quality - 0.85) < 0.01
+    assert abs(result.emotion_alignment - 0.80) < 0.01
+    assert abs(result.character_consistency - 0.90) < 0.01
+    assert abs(result.rhythm_naturalness - 0.82) < 0.01
+    assert abs(result.intelligibility - 0.95) < 0.01
+    expected_overall = (0.85 + 0.80 + 0.90 + 0.82 + 0.95) / 5
+    assert abs(result.overall - expected_overall) < 0.01
+
+
+def test_normalize_nested_scoring_clamps_and_merges_suggestions():
+    """_normalize_nested_scoring clamps out-of-range scores + dedup/limit suggestions."""
+    from src_next.critic.qwen3omni_critic import _normalize_nested_scoring
+
+    nested = {
+        "scores": {
+            "quality": {"score": 12.0, "grade": "A", "reason": "r1", "problems": []},      # > 10
+            "emotion_alignment": {"score": -1.0, "grade": "D", "reason": "r2", "problems": []},  # < 0
+            "character_consistency": {"score": 7.5, "grade": "A", "reason": "r3", "problems": []},
+            "rhythm_naturalness": {"score": 6.0, "grade": "B", "reason": "r4", "problems": []},
+            "intelligibility": {"score": 8.0, "grade": "A", "reason": "r5", "problems": []},
+        },
+        "overall_score": 7.0,
+        "overall_grade": "B",
+        "main_problems": ["问题A", "问题B", "问题A"],         # dedup → ["问题A", "问题B"]
+        "suggestions": ["建议1", "建议2", "建议3", "建议4"],  # combined cap 3 after dedup
+    }
+    flat = _normalize_nested_scoring(nested, "s1", 1)
+
+    # Clamp verification (0-10 → 0-1)
+    assert flat["quality"] == 1.0              # 12.0 clamped to 10.0 / 10 = 1.0
+    assert flat["emotion_alignment"] == 0.0    # -1.0 clamped to 0.0
+    assert abs(flat["character_consistency"] - 0.75) < 0.001
+    assert abs(flat["rhythm_naturalness"] - 0.60) < 0.001
+    assert abs(flat["intelligibility"] - 0.80) < 0.001
+
+    # Overall override from LLM overall_score (7.0/10 = 0.7)
+    assert abs(flat["overall"] - 0.70) < 0.001
+
+    # Suggestions: dedup + max 3 + ；-joined
+    assert "问题A" in flat["suggestions"]
+    assert flat["suggestions"].count("问题A") == 1  # dedup happened
+    parts = flat["suggestions"].split("；")
+    assert len(parts) <= 3  # max 3 entries
+
+    # Metadata passthrough
+    assert flat["segment_id"] == "s1"
+    assert flat["attempt"] == 1

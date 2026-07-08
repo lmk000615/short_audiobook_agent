@@ -535,8 +535,13 @@ class CriticResult:
         自动做：
         - 5 维分数 clamp 到 [0.0, 1.0]
         - 缺失维度补 0.5（中性分）
-        - overall 自动计算（5 维平均）
+        - overall：若 data["overall"] 存在则优先用（外部 override，来自
+          qwen3omni_critic._normalize_nested_scoring 注入的 LLM overall_score），
+          否则按 5 维平均计算
         - segment_id 必填，缺失抛 KeyError
+
+        嵌套 schema（scores.<dim>.{score,grade,...}）由 qwen3omni_critic 内的
+        _normalize_nested_scoring 预处理为扁平格式后调本方法。
         """
         dims = [
             "quality",
@@ -552,7 +557,14 @@ class CriticResult:
             except (TypeError, ValueError):
                 v = 0.5
             scores[k] = max(0.0, min(1.0, v))
-        overall = sum(scores.values()) / len(scores)
+        overall_raw = data.get("overall")
+        if overall_raw is not None:
+            try:
+                overall = max(0.0, min(1.0, float(overall_raw)))
+            except (TypeError, ValueError):
+                overall = sum(scores.values()) / len(scores)
+        else:
+            overall = sum(scores.values()) / len(scores)
         return cls(
             segment_id=data["segment_id"],
             quality=scores["quality"],

@@ -66,6 +66,63 @@ def _parse_scoring_json(raw_text: str) -> dict:
     return obj
 
 
+_CRITIC_DIMS = ("quality", "emotion_alignment", "character_consistency",
+                "rhythm_naturalness", "intelligibility")
+
+
+def _normalize_nested_scoring(scoring: dict, segment_id: str, attempt: int) -> dict:
+    """Convert LLM's nested schema to CriticResult.from_json-compatible flat dict.
+
+    LLM output (new nested 0-10 + A/B/C/D schema):
+        {"scores": {"quality": {"score": 8.5, "grade": "A", ...}, ...},
+         "overall_score": 8.6, "overall_grade": "A",
+         "main_problems": [...], "suggestions": [...]}
+
+    Returns flat dict (compatible with CriticResult.from_json):
+        {"segment_id": ..., "quality": 0.85, ..., "overall": 0.86, "suggestions": "p1；s1"}
+
+    If the input is already flat (legacy schema), returns it with segment_id/attempt defaulted.
+    """
+    if "scores" not in scoring or not isinstance(scoring["scores"], dict):
+        scoring.setdefault("segment_id", segment_id)
+        scoring.setdefault("attempt", attempt)
+        return scoring
+
+    def _extract_dim_score(dim_name: str) -> float:
+        dim_obj = scoring["scores"].get(dim_name, {})
+        if not isinstance(dim_obj, dict):
+            return 5.0
+        try:
+            raw = float(dim_obj.get("score", 5.0))
+        except (TypeError, ValueError):
+            raw = 5.0
+        return max(0.0, min(10.0, raw))
+
+    flat = {dim: _extract_dim_score(dim) / 10.0 for dim in _CRITIC_DIMS}
+    flat["segment_id"] = segment_id
+    flat["attempt"] = attempt
+
+    overall_raw = scoring.get("overall_score")
+    if overall_raw is not None:
+        try:
+            flat["overall"] = max(0.0, min(1.0, float(overall_raw) / 10.0))
+        except (TypeError, ValueError):
+            flat["overall"] = sum(flat[d] for d in _CRITIC_DIMS) / len(_CRITIC_DIMS)
+    else:
+        flat["overall"] = sum(flat[d] for d in _CRITIC_DIMS) / len(_CRITIC_DIMS)
+
+    main_problems = scoring.get("main_problems", []) or []
+    suggestions_list = scoring.get("suggestions", []) or []
+    combined: list[str] = []
+    for item in list(main_problems) + list(suggestions_list):
+        s = str(item).strip()
+        if s and s not in combined:
+            combined.append(s)
+    flat["suggestions"] = "；".join(combined[:3]) if combined else "无具体建议"
+
+    return flat
+
+
 class Qwen3OmniCritic:
     """用 Qwen3-Omni 多模态模型评估单段音频质量。"""
 
@@ -122,9 +179,8 @@ class Qwen3OmniCritic:
         if not raw_text:
             raise RuntimeError("audio_analysis returned empty text field")
         scoring = _parse_scoring_json(raw_text)
-        scoring["segment_id"] = segment.segment_id
-        scoring["attempt"] = tts_instruction.attempt
-        return CriticResult.from_json(scoring, attempt=tts_instruction.attempt)
+        flat = _normalize_nested_scoring(scoring, segment.segment_id, tts_instruction.attempt)
+        return CriticResult.from_json(flat, attempt=tts_instruction.attempt)
 
     @staticmethod
     def _neutral_result(segment_id: str, attempt: int, err_msg: str) -> CriticResult:
