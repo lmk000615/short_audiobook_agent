@@ -216,3 +216,98 @@ def test_normalize_nested_scoring_clamps_and_merges_suggestions():
     # Metadata passthrough
     assert flat["segment_id"] == "s1"
     assert flat["attempt"] == 1
+
+
+class _FakeHttp500Response:
+    status_code = 500
+    text = "internal server error"
+
+    def json(self):
+        raise ValueError("not JSON")
+
+
+class _FakeJsonBadResponse:
+    """200 but body is plain text, no JSON extractable."""
+    status_code = 200
+
+    def json(self):
+        return {"text": "Sorry, I cannot evaluate this audio."}
+
+    @property
+    def text(self):
+        import json as _json
+        return _json.dumps(self.json())
+
+
+class _FakeEmptyTextFieldResponse:
+    """200 but text field is empty string."""
+    status_code = 200
+
+    def json(self):
+        return {"text": ""}
+
+    @property
+    def text(self):
+        import json as _json
+        return _json.dumps(self.json())
+
+
+def _patch_post(monkeypatch, response_obj):
+    import src_next.critic.qwen3omni_critic as mod
+    def fake_post(*a, **kw):
+        return response_obj()
+    monkeypatch.setattr(mod.requests, "post", fake_post)
+
+
+def test_evaluate_http_500_returns_neutral(monkeypatch):
+    """500 error → neutral 0.5 result, no exception."""
+    _patch_post(monkeypatch, _FakeHttp500Response)
+    from src_next.critic.qwen3omni_critic import Qwen3OmniCritic
+    critic = Qwen3OmniCritic(base_url="http://fake")
+    seg, inst = _make_segment_and_instruction()
+    result = critic.evaluate("/nonexistent.wav", seg, inst)
+    assert result.overall == 0.5
+    for v in (result.quality, result.emotion_alignment, result.character_consistency,
+              result.rhythm_naturalness, result.intelligibility):
+        assert v == 0.5
+    assert ("失败" in result.suggestions
+            or "error" in result.suggestions.lower()
+            or "500" in result.suggestions)
+
+
+def test_evaluate_non_json_text_returns_neutral(monkeypatch):
+    """200 but text is plain English with no JSON → neutral fallback."""
+    _patch_post(monkeypatch, _FakeJsonBadResponse)
+    from src_next.critic.qwen3omni_critic import Qwen3OmniCritic
+    critic = Qwen3OmniCritic(base_url="http://fake")
+    seg, inst = _make_segment_and_instruction()
+    result = critic.evaluate("/x.wav", seg, inst)
+    assert result.overall == 0.5
+
+
+def test_evaluate_empty_text_field_returns_neutral(monkeypatch):
+    """200 but text field is empty → neutral fallback."""
+    _patch_post(monkeypatch, _FakeEmptyTextFieldResponse)
+    from src_next.critic.qwen3omni_critic import Qwen3OmniCritic
+    critic = Qwen3OmniCritic(base_url="http://fake")
+    seg, inst = _make_segment_and_instruction()
+    result = critic.evaluate("/x.wav", seg, inst)
+    assert result.overall == 0.5
+
+
+def test_evaluate_request_exception_returns_neutral(monkeypatch):
+    """requests.post raises (e.g., connection refused / timeout) → neutral fallback."""
+    import src_next.critic.qwen3omni_critic as mod
+
+    def raising_post(*a, **kw):
+        raise mod.requests.exceptions.ConnectTimeout("simulated timeout")
+
+    monkeypatch.setattr(mod.requests, "post", raising_post)
+    from src_next.critic.qwen3omni_critic import Qwen3OmniCritic
+    critic = Qwen3OmniCritic(base_url="http://fake")
+    seg, inst = _make_segment_and_instruction()
+    result = critic.evaluate("/x.wav", seg, inst)
+    assert result.overall == 0.5
+    assert ("失败" in result.suggestions
+            or "error" in result.suggestions.lower()
+            or "timeout" in result.suggestions.lower())
