@@ -101,7 +101,9 @@ def test_evaluate_returns_critic_result_on_success(monkeypatch):
     assert 0.89 <= result.character_consistency <= 0.91    # 9.0/10
     assert 0.81 <= result.rhythm_naturalness <= 0.83       # 8.2/10
     assert 0.94 <= result.intelligibility <= 0.96          # 9.5/10
-    assert 0.85 <= result.overall <= 0.87                  # 8.6/10 (LLM overall_score override)
+    # overall = 5-dim average (LLM's overall_score intentionally ignored)
+    # (0.85+0.80+0.90+0.82+0.95)/5 = 0.864
+    assert 0.85 <= result.overall <= 0.88
     assert isinstance(result.suggestions, str)
     assert "情感表达" in result.suggestions                # merged from suggestions list
 
@@ -201,8 +203,9 @@ def test_normalize_nested_scoring_clamps_and_merges_suggestions():
     assert abs(flat["rhythm_naturalness"] - 0.60) < 0.001
     assert abs(flat["intelligibility"] - 0.80) < 0.001
 
-    # Overall override from LLM overall_score (7.0/10 = 0.7)
-    assert abs(flat["overall"] - 0.70) < 0.001
+    # LLM's overall_score is intentionally ignored — flat dict should NOT contain "overall"
+    # (let CriticResult.from_json compute 5-dim average)
+    assert "overall" not in flat
 
     # Suggestions: dedup + max 3 + ；-joined
     assert "问题A" in flat["suggestions"]

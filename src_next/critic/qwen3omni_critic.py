@@ -79,7 +79,10 @@ def _normalize_nested_scoring(scoring: dict, segment_id: str, attempt: int) -> d
          "main_problems": [...], "suggestions": [...]}
 
     Returns flat dict (compatible with CriticResult.from_json):
-        {"segment_id": ..., "quality": 0.85, ..., "overall": 0.86, "suggestions": "p1；s1"}
+        {"segment_id": ..., "quality": 0.85, ..., "suggestions": "p1；s1"}
+
+    Note: LLM's overall_score is intentionally ignored — CriticResult.from_json
+    computes overall from 5-dim average (LLM's overall is redundant info).
 
     If the input is already flat (legacy schema), returns it with segment_id/attempt defaulted.
     """
@@ -101,15 +104,6 @@ def _normalize_nested_scoring(scoring: dict, segment_id: str, attempt: int) -> d
     flat = {dim: _extract_dim_score(dim) / 10.0 for dim in _CRITIC_DIMS}
     flat["segment_id"] = segment_id
     flat["attempt"] = attempt
-
-    overall_raw = scoring.get("overall_score")
-    if overall_raw is not None:
-        try:
-            flat["overall"] = max(0.0, min(1.0, float(overall_raw) / 10.0))
-        except (TypeError, ValueError):
-            flat["overall"] = sum(flat[d] for d in _CRITIC_DIMS) / len(_CRITIC_DIMS)
-    else:
-        flat["overall"] = sum(flat[d] for d in _CRITIC_DIMS) / len(_CRITIC_DIMS)
 
     main_problems = scoring.get("main_problems", []) or []
     suggestions_list = scoring.get("suggestions", []) or []
