@@ -197,3 +197,47 @@ def test_repair_handles_llm_returning_non_dict_top_level():
     result = agent.repair(original=inst, segment=seg, critic=critic)
     assert result.parameters == inst.parameters
     assert result.attempt == inst.attempt + 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Integration test — skip-marked. See KNOWN_ISSUES.md §1 to activate.
+# ─────────────────────────────────────────────────────────────────────────────
+
+import pytest  # noqa: E402 — top of file already imports pytest, but be defensive
+
+
+_INTEGRATION_SKIP_REASON = (
+    "awaiting real LLM service access — see src_next/critic/KNOWN_ISSUES.md §1"
+)
+
+
+@pytest.mark.integration
+@pytest.mark.skip(reason=_INTEGRATION_SKIP_REASON)
+def test_repair_with_real_llm_adjusts_parameters(real_llm):
+    """Integration: real LLM should change at least one parameter when given a low emotion_alignment score."""
+    from src_next.critic.tts_repair import TTSRepairAgent
+
+    seg, inst, critic = _make_inputs(
+        parameters={"instruction": "平稳叙述", "speed": 1.0}
+    )
+    # Critic says emotion_alignment is weak → LLM should adjust instruction
+    agent = TTSRepairAgent(llm_client=real_llm)
+
+    result = agent.repair(original=inst, segment=seg, critic=critic)
+
+    # Contract: immutable fields untouched
+    assert result.segment_id == "s1"
+    assert result.speaker == "narrator"
+    assert result.text == "窗外下着大雨。"
+    assert result.model == "S2Pro"
+    assert result.voice_ref == inst.voice_ref
+    assert result.attempt == 2
+
+    # Behavior: at least one parameter changed (most likely instruction or speed)
+    changed_keys = [
+        k for k in result.parameters
+        if result.parameters[k] != inst.parameters.get(k)
+    ]
+    assert len(changed_keys) > 0, (
+        f"real LLM did not change any parameter. before={inst.parameters}, after={result.parameters}"
+    )
