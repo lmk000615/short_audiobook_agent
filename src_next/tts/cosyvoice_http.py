@@ -345,10 +345,20 @@ class CosyVoiceHTTPAdapter(BaseTTSAdapter):
                 prompt_text_field = _ENDOFPROMPT
                 text_field = inst.text
 
+            # 便携蓝区测试适配更改：
+            # prompt_audio：文件可读 → base64（可跨机，pipeline 与 server 不同机时必需）；
+            # 否则退回路径字符串（同机部署时的原行为）。server 端两种都接受
+            # （见 usage_guide_cosyvoice.md：prompt_audio 可为文件路径或 base64）。
+            _ref = Path(voice_ref)
+            if _ref.exists() and _ref.stat().st_size > 0:
+                prompt_audio_field = base64.b64encode(_ref.read_bytes()).decode("ascii")
+            else:
+                prompt_audio_field = voice_ref
+
             payload: dict[str, Any] = {
                 "text": text_field,
                 "prompt_text": prompt_text_field,
-                "prompt_audio": voice_ref,  # 路径字符串
+                "prompt_audio": prompt_audio_field, # 原本是voice_ref，现改为 base64 或路径字符串(voice_ref)，逻辑见上
                 "mode": mode,
                 "stream": False,
             }

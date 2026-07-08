@@ -10,7 +10,7 @@
 # 必须是下面 backends 字典里 key 的子集。
 enabled_backends:
   - cosyvoice_http
-  - s2pro_http
+  # - s2pro_http   # (蓝区便携适配)暂缓部署（4 服务 33GB > 24GB，需 GPU offload）
   - indextts_http
 
 # 各 backend 的服务地址 + extra_args。
@@ -19,14 +19,16 @@ enabled_backends:
 # s2pro_adapter / indextts_http 的 __init__ 保持一致。
 backends:
   cosyvoice_http:
-    base_url: "http://10.50.121.102:8005"
+    # base_url: "http://10.50.121.102:8005"   # 黄区
+    base_url: "http://127.0.0.1:8005"         # （蓝区便携适配）外部：SSH 隧道到 AutoDL（切黄区时注释本行、启用上一行）
     extra_args:
       max_workers: 4
       timeout_per_seg: 300
       bypass_proxy: true
 
   s2pro_http:
-    base_url: "http://10.50.121.102:8010"   # 8010 端口（含音色克隆）
+    # base_url: "http://10.50.121.102:8010"   # 黄区
+    base_url: "http://127.0.0.1:8010"         # （蓝区便携适配）外部：SSH 隧道到 AutoDL（切黄区时注释本行、启用上一行）
     extra_args:
       max_workers: 4
       enable_reference_audio: true
@@ -40,7 +42,8 @@ backends:
       bypass_proxy: true
 
   indextts_http:
-    base_url: "http://10.50.121.102:8009"
+    # base_url: "http://10.50.121.102:8009"   # 黄区
+    base_url: "http://127.0.0.1:8009"         # （蓝区便携适配）外部：SSH 隧道到 AutoDL（切黄区时注释本行、启用上一行）
     extra_args:
       max_workers: 4
       timeout_per_seg: 300

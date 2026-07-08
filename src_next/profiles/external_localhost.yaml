@@ -1,0 +1,67 @@
+# external_localhost.yaml
+#
+# 外部部署 profile：Mac 跑 pipeline + AutoDL 跑 4 个模型服务，
+# 通过 SSH 隧道把 AutoDL 端口映射到 Mac 的 127.0.0.1。
+#
+# 架构：
+#   Mac(pipeline) --HTTP--> 127.0.0.1:{8007,8005,8009}(SSH 隧道) --> AutoDL 模型服务
+#   LLM 走公开 DashScope（.env 里的 QWEN_*）。
+#
+# 与黄区 profile 的唯一差别 = base_url 从 10.50.121.x 换成 127.0.0.1（经隧道）。
+# adapter / core / analysis 全不动；CosyVoice adapter 改发 base64（对公司 server 也兼容）。
+#
+# 新链路：pipeline.use_tts_director=true，TTS 走全局 src_next/tts/backends.yaml
+# （已把 3 个 base_url 指向 127.0.0.1，enabled_backends 暂只留 cosyvoice+indextts，
+#  S2Pro 等 GPU offload 就绪后再开）。
+
+name: external_localhost
+region: external
+description: |
+  Mac 跑 pipeline + AutoDL 模型服务（SSH 隧道到 127.0.0.1）。
+  LLM=DashScope qwen3.6-plus；voicebank=Qwen3 VoiceDesign(:8007)；
+  TTS 走 backends.yaml（CosyVoice3 :8005 + IndexTTS2 :8009）。
+
+# ── llm：公开 DashScope（.env 读 QWEN_*）──────────────────────────────
+llm:
+  backend: qwen_http
+  base_url_env: QWEN_BASE_URL
+  api_key_env: QWEN_API_KEY
+  model: qwen3.6-plus
+  timeout: 300
+
+# ── voicebank：Qwen3-TTS VoiceDesign（经隧道到 AutoDL :8007）──────────
+voicebank:
+  backend: qwen3_http
+  base_url: "http://127.0.0.1:8007"
+  output_subdir: "voicebank"
+  extra_args:
+    language: "Chinese"
+    reference_text: "你好，欢迎使用语音设计功能，这是一个测试句子。"
+    timeout_per_char: 120
+    max_workers: 2
+    bypass_proxy: true
+
+# ── tts：use_tts_director=true 时本块基本被 backends.yaml 取代，仅保留 output_subdir ──
+tts:
+  backend: cosyvoice_http
+  base_url: "http://127.0.0.1:8005"
+  output_subdir: "audio_segments"
+  extra_args:
+    bypass_proxy: true
+
+# ── output ────────────────────────────────────────────────────────────
+output:
+  root: "output-src-next/external_localhost"
+
+# ── pipeline：启用新链路（9 stage，LLM 逐 segment 选 model）───────────
+pipeline:
+  save_intermediate_json: true
+  reuse_existing: false
+  stop_on_tts_error: false
+  use_tts_director: true
+
+notes:
+  - "Mac 跑 pipeline；AutoDL 端口经 SSH 隧道映射到 127.0.0.1。"
+  - "运行前先开隧道：ssh -p <端口> root@<主机> -L 8007:127.0.0.1:8007 -L 8005:127.0.0.1:8005 -L 8009:127.0.0.1:8009 -N"
+  - "运行时设 NO_PROXY=localhost,127.0.0.1,.aliyuncs.com 避免 Mac 全局 SOCKS 代理拦截。"
+  - "S2Pro 暂未启用（backends.yaml enabled_backends 注释掉了 s2pro_http）。"
