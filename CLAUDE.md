@@ -36,6 +36,7 @@ short_audiobook_agent/
 ├── notes/             ← 项目笔记
 ├── models/            ← 本地模型权重（不入 git）
 ├── config/            ← 旧链路配置（src_next 不用）
+├── tests/             ← pytest 单测 + audiobench_zh 中文测试集（30 条 adversarial 样例）
 ├── usage_guide_*.md   ← 各后端服务的接入说明（黄区 IP / 端口 / 鉴权）
 └── run.py             ← 旧链路入口（不要再扩展）
 ```
@@ -278,6 +279,9 @@ python -m src_next.analysis.test_analysis_qwen
 python -m src_next.core.audiobook_pipeline \
     --input input/sample_story_01.txt \
     --profile src_next/profiles/yellow_qwen3http_cosyvoicehttp.yaml
+
+# 6. Audiobench zh 测试集完整性（无需服务，蓝区可跑）
+python tests/audiobench_zh/_check_integrity.py
 ```
 
 完成后**汇报**：
