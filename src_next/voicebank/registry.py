@@ -28,7 +28,8 @@ def create_voicebank_adapter(
         backend: 后端标识。当前支持：
             - "mock": MockVoicebankAdapter（离线占位）
             - "qwen_voicegenerator": QwenVoiceGeneratorAdapter（subprocess 调本地 Qwen VoiceDesign，蓝区用）
-            - "qwen3_http": Qwen3HTTPAdapter（HTTP 直连服务器，黄区用）
+            - "qwen3_http": Qwen3HTTPAdapter（HTTP 直连 Qwen3 VoiceDesign 服务器，黄区用）
+            - "voxcpm2_http": VoxCPM2HTTPAdapter（HTTP 直连 VoxCPM2 voice_design，黄区用，48 kHz 输出）
         **config: 传给具体 adapter 构造函数的参数（如 generator_root / script_path / base_url）。
 
     Returns:
@@ -50,7 +51,11 @@ def create_voicebank_adapter(
         from .qwen3_http import Qwen3HTTPAdapter
         return Qwen3HTTPAdapter(**config)
 
+    if backend == "voxcpm2_http":
+        from .voxcpm2_http import VoxCPM2HTTPAdapter
+        return VoxCPM2HTTPAdapter(**config)
+
     raise VoicebankError(
         f"未知 voicebank backend: {backend!r}。"
-        "当前支持: 'mock', 'qwen_voicegenerator', 'qwen3_http'。"
+        "当前支持: 'mock', 'qwen_voicegenerator', 'qwen3_http', 'voxcpm2_http'。"
     )

@@ -93,6 +93,9 @@ txt + profile
 | `yellow_qwen3http_cosyvoicehttp.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + CosyVoice3（**最稳，演示首选**）|
 | `yellow_qwen3http_indexttshttp.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + IndexTTS HTTP |
 | `yellow_gemma_qwen_s2pro.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + S2Pro（含音色克隆，8010 端口）|
+| `yellow_voxcpm2_cosyvoicehttp.yaml` | 黄区 | Gemma4 + VoxCPM2 VoiceDesign + CosyVoice3|
+| `yellow_voxcpm2_indexttshttp.yaml` | 黄区 | Gemma4 + VoxCPM2 VoiceDesign + IndexTTS HTTP |
+| `yellow_gemma_voxcpm2_s2pro.yaml` | 黄区 | Gemma4 + VoxCPM2 VoiceDesign + S2Pro（含音色克隆，8010 端口）|
 | `blue_qwenvoice_indextts_batch.yaml` | 蓝区 | Qwen + Qwen VoiceDesign subprocess + IndexTTS subprocess |
 
 ---
