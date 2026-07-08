@@ -311,3 +311,71 @@ def test_evaluate_request_exception_returns_neutral(monkeypatch):
     assert ("失败" in result.suggestions
             or "error" in result.suggestions.lower()
             or "timeout" in result.suggestions.lower())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Integration tests — skip-marked. See KNOWN_ISSUES.md §1 to activate.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INTEGRATION_SKIP_REASON = (
+    "awaiting Qwen3-Omni service access — see src_next/critic/KNOWN_ISSUES.md §1"
+)
+
+
+@pytest.mark.integration
+@pytest.mark.skip(reason=_INTEGRATION_SKIP_REASON)
+def test_critic_high_quality_audio_scores_high(real_critic, good_narration_wav):
+    """Integration: good_narration.wav should get all 5 dims >= 0.7."""
+    seg, inst = _make_segment_and_instruction()
+    inst.parameters = {"instruction": "平稳叙述"}
+
+    result = real_critic.evaluate(good_narration_wav, seg, inst)
+
+    assert result.segment_id == "s1"
+    assert 0.0 <= result.quality <= 1.0
+    assert 0.0 <= result.overall <= 1.0
+    assert result.quality >= 0.7, f"quality too low for good audio: {result.quality}"
+    assert result.intelligibility >= 0.7, f"intelligibility too low: {result.intelligibility}"
+    assert isinstance(result.suggestions, str)
+
+
+@pytest.mark.integration
+@pytest.mark.skip(reason=_INTEGRATION_SKIP_REASON)
+def test_critic_low_quality_audio_scores_low(real_critic, bad_clipping_wav):
+    """Integration: bad_clipping.wav should get quality < 0.6."""
+    seg, inst = _make_segment_and_instruction()
+    result = real_critic.evaluate(bad_clipping_wav, seg, inst)
+    assert result.quality < 0.6, f"quality too high for bad audio: {result.quality}"
+
+
+@pytest.mark.integration
+@pytest.mark.skip(reason=_INTEGRATION_SKIP_REASON)
+def test_critic_sorting_good_higher_than_bad(real_critic, good_narration_wav, bad_clipping_wav):
+    """Integration: relative ordering is more stable than absolute values.
+
+    Good audio's quality MUST be higher than bad audio's quality. This sidesteps
+    LLM scoring drift (a 0.05 wiggle is OK as long as relative order holds).
+    """
+    seg, inst = _make_segment_and_instruction()
+
+    good_result = real_critic.evaluate(good_narration_wav, seg, inst)
+    bad_result = real_critic.evaluate(bad_clipping_wav, seg, inst)
+
+    assert good_result.quality > bad_result.quality, (
+        f"sorting violated: good={good_result.quality} <= bad={bad_result.quality}"
+    )
+    assert good_result.overall > bad_result.overall
+
+
+@pytest.mark.integration
+@pytest.mark.skip(reason=_INTEGRATION_SKIP_REASON)
+def test_critic_emotion_mismatch_scores_low_alignment(real_critic, emotion_mismatch_wav):
+    """Integration: neutral-tone audio scored against 'sad' expected → emotion_alignment < 0.6."""
+    seg, inst = _make_segment_and_instruction()
+    inst.parameters = {"instruction": "极度悲伤，哭泣感"}
+
+    result = real_critic.evaluate(emotion_mismatch_wav, seg, inst)
+
+    assert result.emotion_alignment < 0.6, (
+        f"emotion_alignment too high for mismatched audio: {result.emotion_alignment}"
+    )
