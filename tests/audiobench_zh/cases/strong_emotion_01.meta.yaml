@@ -1,0 +1,18 @@
+id: strong_emotion_01
+category: strong_emotion
+test_purpose: "压测暴怒情绪对白：父亲连续短促反问，多次'？！'组合感叹号，punctuation 节奏急促，TTS 应识别为高 emotion_intensity + 高 volume + 快 pace。"
+expected_speaker_count: 3
+expected_challenges:
+  - "对白'什么？！'情绪=暴怒，'？！'组合标点"
+  - "对白'你怎么敢！你说！为什么！'连续感叹号 + 短句"
+  - "对白'怕我骂你？！所以你就骗我？！…'连续反问"
+  - "末段'啊？！'单独感叹词收尾"
+  - "导演指令 emotion_intensity 应≥0.8，volume=loud，pace=fast"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 3
+char_count: 209
+tags:
+  - "强情绪"
+  - "暴怒"
+  - "短促反问"
+  - "感叹号密集"

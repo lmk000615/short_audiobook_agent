@@ -1,0 +1,117 @@
+# yellow_gemma_voxcpm2_s2pro.yaml
+#
+# 完整 pipeline profile（黄区）：
+#   region    = yellow
+#   llm       = gemma4_http        (Gemma4-26B-A4B)
+#   voicebank = voxcpm2_http       (OpenBMB VoxCPM2 voice_design；为 S2Pro 提供 reference_audio)
+#   tts       = s2pro_http         (Fish Audio S2-Pro 4B；8010 端口支持音色克隆)
+#
+# 关键设计点：
+#   * S2Pro 通过 reference_audio + prompt_text 实现音色克隆；
+#   * voicebank 层用 VoxCPM2（48 kHz 输出），生成的 per-character wav 就是 S2Pro 需要的参考音频；
+#   * tts.reference_text 必须与 voicebank.reference_text **完全一致**
+#     （S2Pro 要求 prompt_text 与参考音频内容逐字匹配，否则克隆效果劣化）；
+#   * tts.base_url 指 8010 端口（api_server_s2pro_8010.py，已扩展支持
+#     multipart reference_audio 上传）；原 8006 端口不支持音色克隆。
+#   * VoxCPM2 输出 48 kHz，S2Pro 8010 端点期望 24 kHz；adapter 自行重采样。
+#
+# 5 个必填块：llm / voicebank / tts / output / pipeline
+# 可选块：webui（让 WebUI 下拉框显示更友好的中文名）
+
+name: yellow_gemma_voxcpm2_s2pro
+region: yellow
+description: |
+  黄区完整链路：Gemma4-26B-A4B LLM + VoxCPM2 VoiceDesign HTTP voicebank
+  + Fish Audio S2-Pro 4B HTTP tts（8010 端口，支持音色克隆）。
+  S2Pro 通过 reference_audio 实现音色克隆（复用 VoxCPM2 voicebank 产物），
+  并支持 15000+ 内联标签 + 自由文本描述做细粒度韵律控制。
+
+# ── webui（可选）：让下拉框显示友好中文名 ──────────────────────────────
+# discover_profiles 优先级：webui.display_name > display_name > name > filename_stem
+webui:
+  display_name: "黄区 Gemma4 + VoxCPM2 VoiceDesign + S2Pro（音色克隆）"
+  description: "VoxCPM2 48kHz voicebank + S2Pro 4B；8010 端口支持 reference_audio 音色克隆 + 15000+ 内联标签"
+
+# ── llm：黄区 Gemma4-26B-A4B ──────────────────────────────────────────
+# bypass_proxy=true 必须；黄区内网 10.50.121.123 在开发机全局代理外。
+llm:
+  backend: gemma4_http
+  base_url: "http://10.50.121.123:8000/v1/chat/completions"
+  model: "gemma-4-26B-A4B"
+  timeout: 300
+  bypass_proxy: true
+
+# ── voicebank：VoxCPM2 VoiceDesign HTTP ─────────────────────────────
+# 生成的 per-character wav 文件会被 S2Pro adapter 读作 reference_audio。
+# **reference_text 必须与下面 tts.reference_text 完全一致**。
+# VoxCPM2 把描述内嵌到 text 开头："(描述)实际文本"。
+# 输出 48 kHz wav，S2Pro adapter 自行重采样到 24 kHz。
+voicebank:
+  backend: voxcpm2_http
+  base_url: "http://10.50.121.102:8012"
+  output_subdir: "voicebank"
+  extra_args:
+    reference_text: "你好，欢迎使用 VoxCPM2 角色音色生成系统。"
+    # VoxCPM2 显存 8 GB，比 Qwen3 大；首次推理有 30s warm-up，给 90s 余量
+    timeout_per_char: 90
+    max_workers: 4
+    bypass_proxy: true
+
+# ── tts：Fish Audio S2-Pro HTTP（8010 端口，v2 真实合成 + 音色克隆） ───
+# 服务由 api_server_s2pro_8010.py 提供，相对原 8006 wrapper 多支持：
+#   - multipart 字段 reference_audio（文件上传）
+#   - multipart 字段 prompt_text（转录文本，与 wav 必须匹配）
+#   - multipart 字段 enable_reference_audio（bool 标志）
+# 详细用法见 usage_guide_s2pro.md 第 20 节。
+tts:
+  backend: s2pro_http
+  base_url: "http://10.50.121.102:8010"
+  output_subdir: "audio_segments"
+  extra_args:
+    model: "s2pro-4b"
+    # ── 音色克隆配置 ──
+    # 启用后 adapter 从 voicebank_result 查 speaker → wav 路径，multipart
+    # 上传给 S2Pro 8010 端点；server 用 DAC codec 编码为 VQ tokens。
+    # false = 用模型默认音色（每次调用随机，不推荐用于有声书）。
+    enable_reference_audio: true
+    # **必须与 voicebank.reference_text 完全一致**；
+    # 否则 S2Pro 拿到 wav 时 prompt_text 不匹配，克隆效果劣化。
+    reference_text: "你好，欢迎使用 VoxCPM2 角色音色生成系统。"
+    # ── 内联标签控制 ──
+    # 启用后 adapter 把通用字段（emotion/pace/volume/pitch/pause）翻译成
+    # [excited]/[pause]/[quiet] 等内联标签；false = 原文直出。
+    enable_inline_tags: true
+    # 标签密度三档：
+    #   low    = emotion + pause + stress_wraps（最干净）
+    #   medium = + pace + volume + pitch（默认推荐）
+    #   high   = + intensity-driven inferred tags（[sigh]/[inhale]/[laughing]）
+    max_tag_density: "medium"
+    # ── 生成参数（透传给 8010 端点） ──
+    temperature: 0.7
+    top_p: 0.7
+    max_new_tokens: 4096
+    # ── 工程参数 ──
+    timeout_per_seg: 300
+    max_workers: 4
+    bypass_proxy: true
+
+# ── output：黄区 pipeline 输出根目录 ──────────────────────────────────
+output:
+  root: "output-src-next/yellow_gemma_voxcpm2_s2pro"
+
+# ── pipeline：流程开关 ─────────────────────────────────────────────────
+pipeline:
+  save_intermediate_json: true
+  reuse_existing: false
+  stop_on_tts_error: false
+
+notes:
+  - "S2Pro 通过 reference_audio 实现音色克隆；voicebank 层用 VoxCPM2。"
+  - "tts.base_url 指 8010 端口（api_server_s2pro_8010.py）；8006 不支持音色克隆。"
+  - "**tts.reference_text 必须与 voicebank.reference_text 完全一致（S2Pro 强约束）**。"
+  - "VoxCPM2 输出 48 kHz；S2Pro 8010 端点期望 24 kHz，adapter 自行重采样。"
+  - "VoxCPM2 voice_design 模式：text 开头括号内嵌描述，无 reference_audio。"
+  - "克隆模式（VoxCPM2 自己的 reference_audio/prompt_audio）留 v2。"
+  - "v2 adapter 真实调 HTTP；失败段不阻断其他段；wav 缓存命中自动跳过。"
+  - "max_tag_density=high 会加 [sigh]/[laughing] 等推断标签；过密可降为 low/medium。"
+  - "切换 backend 组合只换 profile，不改 adapter / pipeline 代码。"

@@ -1,0 +1,18 @@
+id: speaker_hard_01
+category: speaker_hard
+test_purpose: "压测说话人后置、前置倒装、空对白：连续多次出现「「…」+动作描写+说话人」结构，story_resolver 需靠动作主语反推。"
+expected_speaker_count: 3
+expected_challenges:
+  - "对白'……'后置说话人（'老师叹了口气'）"
+  - "对白'这次怎么又没交？'前后均无说话人标记"
+  - "对白'我……我忘了。'后置说话人（小明）"
+  - "对白'……'完全空对白（含省略号）"
+  - "对白'……'她把手…'下不为例。'——说话人在对白中间穿插（'她把手按在肩上'）"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 5
+char_count: 221
+tags:
+  - "说话人后置"
+  - "倒装"
+  - "空对白"
+  - "插入说话人"

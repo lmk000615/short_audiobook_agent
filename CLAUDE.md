@@ -36,6 +36,7 @@ short_audiobook_agent/
 ├── notes/             ← 项目笔记
 ├── models/            ← 本地模型权重（不入 git）
 ├── config/            ← 旧链路配置（src_next 不用）
+├── tests/             ← pytest 单测 + audiobench_zh 中文测试集（30 条 adversarial 样例）
 ├── usage_guide_*.md   ← 各后端服务的接入说明（黄区 IP / 端口 / 鉴权）
 └── run.py             ← 旧链路入口（不要再扩展）
 ```
@@ -164,8 +165,13 @@ pipeline:   # save_intermediate_json / reuse_existing / stop_on_tts_error
 | `yellow_qwen3http_cosyvoicehttp.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + CosyVoice3（**最稳，演示首选**）|
 | `yellow_qwen3http_indexttshttp.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + IndexTTS HTTP |
 | `yellow_gemma_qwen_s2pro.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + S2Pro（含音色克隆，8010 端口）|
+| `yellow_voxcpm2_cosyvoicehttp.yaml` | 黄区 | Gemma4 + **VoxCPM2** VoiceDesign + CosyVoice3（voicebank 输出 48 kHz）|
+| `yellow_voxcpm2_indexttshttp.yaml` | 黄区 | Gemma4 + **VoxCPM2** VoiceDesign + IndexTTS HTTP |
+| `yellow_gemma_voxcpm2_s2pro.yaml` | 黄区 | Gemma4 + **VoxCPM2** VoiceDesign + S2Pro（含音色克隆，8010 端口）|
 | `blue_qwenvoice_indextts_batch.yaml` | 蓝区 | Qwen + Qwen VoiceDesign subprocess + IndexTTS subprocess |
 | `blue_indextts.yaml` / `blue_qwen_voicegenerator.yaml` | 蓝区 | 部分 profile（缺块，仅用于单模块测试，**不进 pipeline**）|
+
+> VoxCPM2 voicebank 输出 **48 kHz**，下游 TTS adapter（cosyvoice_http / indextts_http / s2pro_http）若需要 24/22 kHz，由 adapter 自行重采样（参考 commit `e8c6b2c` audio_merger 跨 backend 采样率处理）。voicebank 层不重采样。
 
 ### 常用命令
 
@@ -278,6 +284,9 @@ python -m src_next.analysis.test_analysis_qwen
 python -m src_next.core.audiobook_pipeline \
     --input input/sample_story_01.txt \
     --profile src_next/profiles/yellow_qwen3http_cosyvoicehttp.yaml
+
+# 6. Audiobench zh 测试集完整性（无需服务，蓝区可跑）
+python tests/audiobench_zh/_check_integrity.py
 ```
 
 完成后**汇报**：

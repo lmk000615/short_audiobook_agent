@@ -1,0 +1,21 @@
+id: sfx_trigger_04
+category: sfx_trigger
+test_purpose: "压测段内/段间音效触发：自然语言埋入 5 个声音事件（鸟叫/树叶沙沙/远兽/树叶哗啦/踩断枝），森林环境音叠加心理描写。"
+expected_speaker_count: 2
+expected_challenges:
+  - "声音事件：'啾——啾啾——'山雀鸟叫（尖细连续）"
+  - "声音事件：'沙沙的声响'落叶（持续）"
+  - "声音事件：'嗷——'远兽长嚎（一次性长音）"
+  - "声音事件：'哗啦哗啦地响成一片'风吹叶（持续大面积）"
+  - "声音事件：'咔嚓——'踩断枯枝（突发清脆）"
+  - "音效与主角自语交替，影响情绪节奏"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 318
+tags:
+  - "音效"
+  - "鸟叫"
+  - "树叶"
+  - "兽鸣"
+  - "踩断枝"
+  - "森林迷路"

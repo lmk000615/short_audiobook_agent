@@ -93,6 +93,9 @@ txt + profile
 | `yellow_qwen3http_cosyvoicehttp.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + CosyVoice3（**最稳，演示首选**）|
 | `yellow_qwen3http_indexttshttp.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + IndexTTS HTTP |
 | `yellow_gemma_qwen_s2pro.yaml` | 黄区 | Gemma4 + Qwen3 VoiceDesign + S2Pro（含音色克隆，8010 端口）|
+| `yellow_voxcpm2_cosyvoicehttp.yaml` | 黄区 | Gemma4 + VoxCPM2 VoiceDesign + CosyVoice3|
+| `yellow_voxcpm2_indexttshttp.yaml` | 黄区 | Gemma4 + VoxCPM2 VoiceDesign + IndexTTS HTTP |
+| `yellow_gemma_voxcpm2_s2pro.yaml` | 黄区 | Gemma4 + VoxCPM2 VoiceDesign + S2Pro（含音色克隆，8010 端口）|
 | `blue_qwenvoice_indextts_batch.yaml` | 蓝区 | Qwen + Qwen VoiceDesign subprocess + IndexTTS subprocess |
 
 ---
@@ -198,6 +201,7 @@ python -m src_next.app.gradio_webui --host 0.0.0.0 --port 7860
 | `src_next_主链路运行及核心模块说明.md` | 运行命令 / 排障路径 / 扩展指引 |
 | `src_next/app/WEBUI_USAGE.md` | WebUI 使用细节 |
 | `src_next/tts/S2PRO_ADAPTER_README.md` | S2Pro adapter 内部实现（含 8010 端口 / 音色克隆）|
+| `tests/audiobench_zh/README.md` | 中文测试集（30 条 adversarial 样例，按 8 类配比）|
 | `usage_guide_*.md`（项目根）| 各后端服务的接入细节（IP / 端口 / 鉴权 / curl 示例）|
 
 ---

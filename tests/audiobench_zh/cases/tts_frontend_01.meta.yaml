@@ -1,0 +1,21 @@
+id: tts_frontend_01
+category: tts_frontend
+test_purpose: "压测 TTS 前端数字/日期/时间/单位读法：含 6+ 处日期时间、5+ 处大数字单位、3 处百分号，考验 g2p 和数字正常化。"
+expected_speaker_count: 4
+expected_challenges:
+  - "日期'2024 年 7 月 15 日'需正确读为'二零二四年七月十五日'"
+  - "时间'8 点 30 分/2 点 15 分/6 点/9 点'需读时刻"
+  - "大数字单位'3 万平方米/12 万件/5 万/8 万'万化读法"
+  - "百分号'35%/28%/17%/130%'需读'百分之'"
+  - "复合数字'1 亿 5 千万年'亿/千万混合"
+  - "时间范围'3 至 5 分钟'需读'三到五分钟'"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 5
+char_count: 360
+tags:
+  - "TTS前端"
+  - "数字"
+  - "日期"
+  - "时间"
+  - "单位"
+  - "百分号"

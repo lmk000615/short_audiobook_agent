@@ -1,0 +1,19 @@
+id: long_memory_01
+category: long_memory
+test_purpose: "压测长文本角色一致性：主角周师傅在 5 段中保持口癖'慢点'和'咱们/活儿/使劲儿'等老派用词，character_analyzer 应建立稳定的角色档案。"
+expected_speaker_count: 3
+expected_challenges:
+  - "口癖'慢点'在 5 段中出现 4 次，需保持一致口癖识别"
+  - "用词'咱们/活儿/使劲儿'老派，character 档案应体现"
+  - "性格一致性：温和、有耐心、重传承"
+  - "师徒对话穿插旁白，需正确归属小陈/周师傅"
+  - "总段数 6 段（含对话段），长上下文记忆挑战"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 424
+tags:
+  - "长文本"
+  - "角色一致性"
+  - "口癖"
+  - "老派用词"
+  - "师徒"

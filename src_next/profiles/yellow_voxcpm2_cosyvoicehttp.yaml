@@ -1,0 +1,97 @@
+# yellow_voxcpm2_cosyvoicehttp.yaml
+#
+# 完整 pipeline profile（黄区）：
+#   region    = yellow
+#   voicebank = voxcpm2_http  (OpenBMB VoxCPM2 voice_design via HTTP)
+#   tts       = cosyvoice_http (Fun-CosyVoice3-0.5B via HTTP, instruct 模式)
+#
+# 和 yellow_qwen3http_cosyvoicehttp.yaml 的差异：
+#   * voicebank 换成 VoxCPM2（48 kHz 输出，描述内嵌 text 开头括号包裹）；
+#   * VoxCPM2 endpoint 是 /v1/tts/synthesize（端点名虽像 TTS，但本项目用作 voicebank）；
+#   * VoxCPM2 不需要 language 字段（自动识别 30 种语言）；
+#   * voicebank 生成的 wav 是 48 kHz，cosyvoice_http adapter 自行重采样到 24 kHz。
+#
+# 黄区所有模型都通过内网 HTTP API 调用，不走 subprocess / WSL / 本地 venv。
+# 服务器地址参考项目根 usage_guide_*.md：
+#   Gemma4 LLM:  http://10.50.121.123:8000/v1/chat/completions
+#   VoxCPM2:     http://10.50.121.102:8012
+#   CosyVoice3:  http://10.50.121.102:8005
+#
+# 5 个必填块：llm / voicebank / tts / output / pipeline
+
+name: yellow_voxcpm2_cosyvoicehttp
+region: yellow
+description: |
+  黄区完整链路：Gemma4-26B-A4B LLM + VoxCPM2 VoiceDesign HTTP voicebank
+  + Fun-CosyVoice3 HTTP tts（instruct 模式）。所有模型都通过内网 HTTP API 调用。
+  VoxCPM2 输出 48 kHz wav 作为角色音色参考，下游 cosyvoice_http 自行重采样。
+
+# ── llm：黄区 Gemma4 ───────────────────────────────────────────────
+# 关键：bypass_proxy=true，黄区内网 10.50.121.123 必须绕过开发机全局代理，
+# 否则 requests 会走代理出去再绕回来，导致连接超时 / 404 / silent failure。
+llm:
+  backend: gemma4_http
+  base_url: "http://10.50.121.123:8000/v1/chat/completions"
+  model: "gemma-4-26B-A4B"
+  timeout: 300
+  bypass_proxy: true
+
+# ── voicebank：VoxCPM2 VoiceDesign HTTP ────────────────────────────
+# 服务地址参考 usage_guide_voicecpm2.md。
+# VoxCPM2 把音色描述内嵌到 text 开头："(描述)实际文本"。
+# 输出 48 kHz wav，下游 TTS adapter 自行重采样。
+voicebank:
+  backend: voxcpm2_http
+  base_url: "http://10.50.121.102:8012"
+  output_subdir: "voicebank"
+  extra_args:
+    reference_text: "你好，欢迎使用 VoxCPM2 角色音色生成系统。"
+    # VoxCPM2 显存 8 GB，比 Qwen3 大；首次推理有 30s warm-up，给 90s 余量
+    timeout_per_char: 90
+    # 并发线程数（角色通常 3-5 个，4 线程足够把总耗时压到接近单次请求）
+    max_workers: 4
+    # 黄区内网调用必须 bypass 开发机全局代理
+    bypass_proxy: true
+
+# ── tts：Fun-CosyVoice3 HTTP（instruct 模式）───────────────────────
+# 服务地址参考 usage_guide_cosyvoice.md。
+# instruct 模式要求 prompt_text 末尾加 <|endofprompt|> 分分隔符，adapter
+# 自动处理；profile 只需要声明 mode=instruct 即可。
+#
+# 指令来源（adapter 内 _build_prompt_text 的优先级）：
+#   1. TTSInstruction.delivery_instruction（导演层给的具体朗读指导，最准）
+#   2. emotion + tone + volume + pace 拼自然语言（兜底）
+#   3. 都没有 → "用自然平和的语气说"
+tts:
+  backend: cosyvoice_http
+  base_url: "http://10.50.121.102:8005"
+  output_subdir: "audio_segments"
+  extra_args:
+    # instruct / cross_language / language_mapping 三选一；默认 instruct
+    mode: "instruct"
+    # 单段合成请求超时（秒）；CosyVoice3 比 IndexTTS 略慢，给 90s 余量
+    timeout_per_seg: 90
+    # 并发线程数（默认 4；段数多时增大可降 RTF）
+    max_workers: 4
+    bypass_proxy: true
+
+# ── output：黄区 pipeline 输出根目录 ───────────────────────────────
+# 约定：<统一根>/<profile_name>/，这样不同 yaml 的产物在同一个 output-src-next/
+# 大文件夹下分目录存放，方便对比同一文本在不同后端组合下的效果。
+output:
+  root: "output-src-next/yellow_voxcpm2_cosyvoicehttp"
+
+# ── pipeline：流程开关 ─────────────────────────────────────────────
+pipeline:
+  save_intermediate_json: true
+  reuse_existing: false
+  stop_on_tts_error: false
+
+notes:
+  - "黄区所有模型走内网 HTTP，不走 subprocess / WSL / 本地 venv。"
+  - "Gemma4 / VoxCPM2 / CosyVoice 服务器地址见 usage_guide_*.md。"
+  - "黄区到蓝区切换只换 profile，不改 adapter / pipeline 代码。"
+  - "HTTP adapter 默认 bypass_proxy=true（黄区开发机有全局代理时强制无代理）。"
+  - "VoxCPM2 输出 48 kHz；下游 cosyvoice_http adapter 自行重采样到 24 kHz。"
+  - "VoxCPM2 voice_design 模式：text 开头括号内嵌描述，无 reference_audio。"
+  - "克隆模式（reference_audio / prompt_audio）留 v2，需要 core/data_models.py 扩展字段。"

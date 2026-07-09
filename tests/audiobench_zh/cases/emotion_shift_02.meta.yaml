@@ -1,0 +1,16 @@
+id: emotion_shift_02
+category: emotion_shift
+test_purpose: "压测句内情绪转折（愤怒→软下来）：妈妈前 3 句对白连续暴怒，看见纸条后最后一句'……算了'明显软下来，需识别为委屈/心疼。"
+expected_speaker_count: 3
+expected_challenges:
+  - "对白'你怎么又打架！'情绪=愤怒"
+  - "对白'你倒是说话呀！'情绪=愤怒升级"
+  - "对白'……算了，告诉妈妈到底发生什么。'情绪=软下来（心疼）"
+  - "导演指令需根据'算了'前后情绪转折调整 emotion_intensity"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 201
+tags:
+  - "情绪转折"
+  - "愤怒转委屈"
+  - "母训场景"

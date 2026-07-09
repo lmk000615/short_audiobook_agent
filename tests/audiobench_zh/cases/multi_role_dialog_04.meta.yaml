@@ -1,0 +1,18 @@
+id: multi_role_dialog_04
+category: multi_role_dialog
+test_purpose: "压测家庭场景 5 speaker：爸妈姐弟 4 人 + 旁白，对白穿插日常动作（夹菜/盛汤），靠话题切换判断说话人。"
+expected_speaker_count: 5
+expected_challenges:
+  - "'今天学校怎么样？'无前置说话人，需识别是爸爸（爸爸夹菜动作紧接其后）"
+  - "'姐姐这次比我考得好。'靠'姐姐'反推是弟弟"
+  - "'我……我下次会努力的。'靠上下文（被妈妈问）是弟弟"
+  - "'先把碗里的饭吃完。'是爸爸对弟弟（连续话题）"
+  - "末段爸爸突然提议爬山，姐弟齐声回答需识别为多人合声"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 4
+char_count: 303
+tags:
+  - "多角色"
+  - "家庭场景"
+  - "话题切换"
+  - "5 speaker"

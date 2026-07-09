@@ -1,0 +1,20 @@
+id: tts_frontend_02
+category: tts_frontend
+test_purpose: "压测 TTS 前端多音字+英文缩写+古文断句：含'行/重/朝'多音字、APP/AI/CPU 缩写、《将进酒》古诗句、序号数字。"
+expected_speaker_count: 3
+expected_challenges:
+  - "多音字'行行行'（xíng/háng/tìng）需上下文判定读'xíng xíng xíng'"
+  - "多音字'重章叠句'（chóng）/ '重点'（zhòng）同字不同音"
+  - "多音字'朝代'（cháo）/ '唐代'（cháo）需正确"
+  - "英文缩写 APP/AI/CPU 需读字母或全称"
+  - "古诗'君不见黄河之水天上来'断句节奏"
+  - "数字序号'三年级 2 班/第 3 单元/第 47 页/第一段'序数读法"
+recommended_profile: yellow_qwen3http_cosyvoicehttp.yaml
+expected_difficulty: 5
+char_count: 330
+tags:
+  - "TTS前端"
+  - "多音字"
+  - "英文缩写"
+  - "古诗断句"
+  - "序号"
