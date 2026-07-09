@@ -59,6 +59,14 @@ pipeline:
   reuse_existing: false
   stop_on_tts_error: false
   use_tts_director: true
+  # Stage 6b：对 voicebank 生成的角色参考 wav 做四维评分 + 低分再生成。
+  # 只依赖 soundfile/numpy + 现有 LLM（DashScope），不需额外服务。
+  # 关闭时删掉本块或设 enabled: false。
+  voicebank_critic:
+    enabled: true
+    max_retries: 2
+    score_threshold: 0.6
+    gender_threshold: 0.7
 
 notes:
   - "Mac 跑 pipeline；AutoDL 端口经 SSH 隧道映射到 127.0.0.1。"
