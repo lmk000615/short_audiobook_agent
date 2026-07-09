@@ -439,7 +439,6 @@ class VoicebankCritic:
         regen_history: list[dict] = []
         total_rounds = 0
         speakers_regen = 0
-        speakers_improved = 0
 
         # 构建 name → CharacterProfile 映射
         char_map: dict[str, CharacterProfile] = {c.name: c for c in characters}
@@ -447,179 +446,38 @@ class VoicebankCritic:
         # ── Critic 逐角色日志收集（用于终端输出 + critic.log）─────
         critic_log_lines: list[str] = []
 
-        for speaker, wav_path in voicebank_result.speaker_to_voice.items():
-            char = char_map.get(speaker)
-            if not char:
-                logger.warning("voicebank_critic: speaker %r 不在 characters 中，跳过", speaker)
-                continue
-
-            # 检查 wav 是否是真实文件（mock 模式下是占位字符串）
-            if not Path(wav_path).exists():
-                logger.info(
-                    "voicebank_critic: speaker %r 的 wav 不存在 (%s)，跳过评估",
-                    speaker, wav_path,
-                )
-                skip_result = SpeakerCriticResult(
-                    speaker=speaker,
-                    wav_path=wav_path,
-                    round_index=0,
-                    suggestion="wav 文件不存在，跳过评估",
-                )
-                speaker_results.append(skip_result)
-                critic_log_lines.append(_format_critic_log_line(skip_result))
-                continue
-
-            # ── 首次评估 ────────────────────────────────────────────
-            prev_score = -1.0
-            current_result: SpeakerCriticResult | None = None
-            prev_result_for_feedback: SpeakerCriticResult | None = None
-            current_char = char
-            # 保留原始 voice_prompt，始终用它做评估基准（避免目标漂移）
-            eval_char = char
-            did_regen = False
-            prev_wav_features: dict | None = None
-
-            for round_idx in range(self.max_retries + 1):
-                total_rounds += 1
-
-                # 提取当前 wav 的物理特征（用于"无变化"检测）
-                try:
-                    current_features = _extract_audio_features(wav_path)
-                except Exception:
-                    current_features = None
-
-                # 检测再生成后 wav 是否有实质变化
-                if round_idx > 0 and prev_wav_features is not None and current_features is not None:
-                    if _wav_features_unchanged(prev_wav_features, current_features):
-                        logger.warning(
-                            "voicebank_critic: %s 再生成后音频特征无变化，"
-                            "模型无法通过 prompt 调整此音频，停止重试",
-                            speaker,
-                        )
-                        break
-
-                prev_wav_features = current_features
-
-                # 始终用原始 voice_prompt 评估（避免 revised_prompt 越来越严格导致分数下降）
-                current_result = self._evaluate_speaker(
-                    character=eval_char,
-                    wav_path=wav_path,
-                    round_index=round_idx,
-                    prev_result=prev_result_for_feedback,
-                )
-                speaker_results.append(current_result)
-                prev_result_for_feedback = current_result  # 供下一轮反馈用
-                # ── 逐角色日志输出 ──────────────────────────────────
-                log_line = _format_critic_log_line(current_result)
-                logger.info("voicebank_critic: %s", log_line.strip())
-                critic_log_lines.append(log_line)
-
-                if not current_result.should_regen:
-                    # 通过评估，不需要再生成
-                    break
-
-                if round_idx >= self.max_retries:
-                    # 已达最大重试次数，保留当前 wav
-                    logger.warning(
-                        "voicebank_critic: %s 评分仍不达标 (score=%.2f)，"
-                        "已达 max_retries=%d，保留当前 wav",
-                        speaker, current_result.overall_score, self.max_retries,
-                    )
-                    break
-
-                # ── 触发再生成 ─────────────────────────────────────
-                did_regen = True
-                speakers_regen += 1
-                revised_prompt = current_result.revised_voice_prompt or current_char.voice_prompt
-
-                logger.info(
-                    "voicebank_critic: %s score=%.2f (gender=%.2f) → regen round %d",
-                    speaker, current_result.overall_score,
-                    current_result.gender_match_score, round_idx + 1,
-                )
-
-                regen_record = {
-                    "speaker": speaker,
-                    "round_index": round_idx,
-                    "original_score": current_result.overall_score,
-                    "original_gender_score": current_result.gender_match_score,
-                    "original_voice_prompt": current_char.voice_prompt,
-                    "revised_voice_prompt": revised_prompt,
+        # ── B 优化：各 speaker 相互独立，并行处理（重叠 LLM 打分的网络等待）──
+        # 线程安全：每个 speaker 只读写自己的 <name>.wav，_process_one_speaker 仅用
+        # 局部累加器、不碰任何共享状态；聚合按 speaker_to_voice 原始顺序进行，
+        # 保证 speaker_results / regen_history / critic_log_lines 顺序确定（与串行版一致）。
+        eligible = list(voicebank_result.speaker_to_voice.items())
+        outcomes: dict[str, tuple] = {}
+        if len(eligible) <= 1:
+            for spk, wav in eligible:
+                outcomes[spk] = self._process_one_speaker(spk, wav, char_map, output_dir)
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(
+                max_workers=min(len(eligible), 8), thread_name_prefix="critic_spk"
+            ) as ex:
+                futs = {
+                    ex.submit(self._process_one_speaker, spk, wav, char_map, output_dir): spk
+                    for spk, wav in eligible
                 }
+                for fut in as_completed(futs):
+                    outcomes[futs[fut]] = fut.result()
 
-                # 用修订后的 prompt 构造新的 CharacterProfile（仅用于再生成）
-                regen_char = CharacterProfile(
-                    name=current_char.name,
-                    role_type=current_char.role_type,
-                    gender=current_char.gender,
-                    age_style=current_char.age_style,
-                    personality=current_char.personality,
-                    voice_prompt=revised_prompt,
-                    confidence=current_char.confidence,
-                    aliases=current_char.aliases,
-                )
+        # 按 speaker_to_voice 原始顺序聚合，保证确定性（不受线程完成顺序影响）
+        for spk, _wav in eligible:
+            sr, rh, rounds, regen_ct, logs, final_wav = outcomes[spk]
+            speaker_results.extend(sr)
+            regen_history.extend(rh)
+            total_rounds += rounds
+            speakers_regen += regen_ct
+            critic_log_lines.extend(logs)
+            # 就地更新 voicebank_result（每个 speaker 写自己的 key，无冲突）
+            voicebank_result.speaker_to_voice[spk] = final_wav
 
-                # 单角色再生成
-                try:
-                    # 删除旧 wav，避免 adapter 缓存跳过
-                    old_wav_path = Path(wav_path)
-                    if old_wav_path.exists():
-                        old_wav_path.unlink()
-                        logger.info(
-                            "voicebank_critic: deleted old wav %s for regen",
-                            old_wav_path,
-                        )
-
-                    regen_result = self.vb_adapter.prepare_voicebank(
-                        [regen_char], output_dir,
-                    )
-                    if regen_result.success and speaker in regen_result.speaker_to_voice:
-                        new_wav = regen_result.speaker_to_voice[speaker]
-                        # 就地更新 voicebank_result
-                        voicebank_result.speaker_to_voice[speaker] = new_wav
-                        wav_path = new_wav
-                        current_char = regen_char
-                        # 注意：eval_char 保持不变（原始 voice_prompt），
-                        # current_char 更新为 regen_char（用于下一轮的 prev_result 反馈）
-                    else:
-                        logger.warning(
-                            "voicebank_critic: %s 再生成失败，保留原 wav",
-                            speaker,
-                        )
-                        regen_record["regen_error"] = "adapter 返回 success=False 或 speaker 不在结果中"
-                        regen_history.append(regen_record)
-                        break
-                except (VoicebankError, Exception) as err:
-                    logger.warning(
-                        "voicebank_critic: %s 再生成异常: %s，保留原 wav",
-                        speaker, err,
-                    )
-                    regen_record["regen_error"] = f"{type(err).__name__}: {err}"
-                    regen_history.append(regen_record)
-                    break
-
-                regen_record["new_wav_path"] = wav_path
-                regen_history.append(regen_record)
-
-            # 检查再生成后是否提升
-            if current_result is not None and did_regen:
-                if current_result.overall_score > prev_score if prev_score >= 0 else True:
-                    speakers_improved += 1
-
-            # 记录首次评估分数（用于 speakers_improved 判断）
-            if did_regen and current_result is not None:
-                first_result = next(
-                    (r for r in speaker_results if r.speaker == speaker and r.round_index == 0),
-                    None,
-                )
-                last_result = next(
-                    (r for r in reversed(speaker_results) if r.speaker == speaker),
-                    None,
-                )
-                if first_result and last_result and last_result.overall_score > first_result.overall_score:
-                    speakers_improved += 1
-
-        # 修正 speakers_improved 计数（上面逻辑可能重复计数，重新算）
         speakers_improved = self._count_improved(speaker_results)
 
         critic_result = VoicebankCriticResult(
@@ -649,6 +507,177 @@ class VoicebankCritic:
             logger.warning("voicebank_critic: failed to save critic.log: %s", err)
 
         return critic_result
+
+    def _process_one_speaker(
+        self,
+        speaker: str,
+        wav_path: str,
+        char_map: dict[str, CharacterProfile],
+        output_dir: str,
+    ) -> tuple[list[SpeakerCriticResult], list[dict], int, int, list[str], str]:
+        """评估并（必要时）再生成单个 speaker。
+
+        线程安全：只用局部累加器，不修改任何共享状态（voicebank_result / self 计数）。
+        由 ``evaluate`` 并行调用，返回值在主线程按原始顺序聚合。
+
+        Returns:
+            (speaker_results, regen_history, total_rounds, regen_count, log_lines, final_wav_path)
+        """
+        sr: list[SpeakerCriticResult] = []
+        rh: list[dict] = []
+        rounds = 0
+        regen_ct = 0
+        logs: list[str] = []
+
+        char = char_map.get(speaker)
+        if not char:
+            logger.warning("voicebank_critic: speaker %r 不在 characters 中，跳过", speaker)
+            return sr, rh, rounds, regen_ct, logs, wav_path
+
+        # 检查 wav 是否是真实文件（mock 模式下是占位字符串）
+        if not Path(wav_path).exists():
+            logger.info(
+                "voicebank_critic: speaker %r 的 wav 不存在 (%s)，跳过评估",
+                speaker, wav_path,
+            )
+            skip_result = SpeakerCriticResult(
+                speaker=speaker,
+                wav_path=wav_path,
+                round_index=0,
+                suggestion="wav 文件不存在，跳过评估",
+            )
+            sr.append(skip_result)
+            logs.append(_format_critic_log_line(skip_result))
+            return sr, rh, rounds, regen_ct, logs, wav_path
+
+        # ── 首次评估 ────────────────────────────────────────────
+        current_result: SpeakerCriticResult | None = None
+        prev_result_for_feedback: SpeakerCriticResult | None = None
+        current_char = char
+        # 保留原始 voice_prompt，始终用它做评估基准（避免目标漂移）
+        eval_char = char
+        prev_wav_features: dict | None = None
+
+        for round_idx in range(self.max_retries + 1):
+            rounds += 1
+
+            # 提取当前 wav 的物理特征（用于"无变化"检测）
+            try:
+                current_features = _extract_audio_features(wav_path)
+            except Exception:
+                current_features = None
+
+            # 检测再生成后 wav 是否有实质变化
+            if round_idx > 0 and prev_wav_features is not None and current_features is not None:
+                if _wav_features_unchanged(prev_wav_features, current_features):
+                    logger.warning(
+                        "voicebank_critic: %s 再生成后音频特征无变化，"
+                        "模型无法通过 prompt 调整此音频，停止重试",
+                        speaker,
+                    )
+                    break
+
+            prev_wav_features = current_features
+
+            # 始终用原始 voice_prompt 评估（避免 revised_prompt 越来越严格导致分数下降）
+            current_result = self._evaluate_speaker(
+                character=eval_char,
+                wav_path=wav_path,
+                round_index=round_idx,
+                prev_result=prev_result_for_feedback,
+            )
+            sr.append(current_result)
+            prev_result_for_feedback = current_result  # 供下一轮反馈用
+            # ── 逐角色日志输出 ──────────────────────────────────
+            log_line = _format_critic_log_line(current_result)
+            logger.info("voicebank_critic: %s", log_line.strip())
+            logs.append(log_line)
+
+            if not current_result.should_regen:
+                # 通过评估，不需要再生成
+                break
+
+            if round_idx >= self.max_retries:
+                # 已达最大重试次数，保留当前 wav
+                logger.warning(
+                    "voicebank_critic: %s 评分仍不达标 (score=%.2f)，"
+                    "已达 max_retries=%d，保留当前 wav",
+                    speaker, current_result.overall_score, self.max_retries,
+                )
+                break
+
+            # ── 触发再生成 ─────────────────────────────────────
+            regen_ct += 1
+            revised_prompt = current_result.revised_voice_prompt or current_char.voice_prompt
+
+            logger.info(
+                "voicebank_critic: %s score=%.2f (gender=%.2f) → regen round %d",
+                speaker, current_result.overall_score,
+                current_result.gender_match_score, round_idx + 1,
+            )
+
+            regen_record = {
+                "speaker": speaker,
+                "round_index": round_idx,
+                "original_score": current_result.overall_score,
+                "original_gender_score": current_result.gender_match_score,
+                "original_voice_prompt": current_char.voice_prompt,
+                "revised_voice_prompt": revised_prompt,
+            }
+
+            # 用修订后的 prompt 构造新的 CharacterProfile（仅用于再生成）
+            regen_char = CharacterProfile(
+                name=current_char.name,
+                role_type=current_char.role_type,
+                gender=current_char.gender,
+                age_style=current_char.age_style,
+                personality=current_char.personality,
+                voice_prompt=revised_prompt,
+                confidence=current_char.confidence,
+                aliases=current_char.aliases,
+            )
+
+            # 单角色再生成
+            try:
+                # 删除旧 wav，避免 adapter 缓存跳过
+                old_wav_path = Path(wav_path)
+                if old_wav_path.exists():
+                    old_wav_path.unlink()
+                    logger.info(
+                        "voicebank_critic: deleted old wav %s for regen",
+                        old_wav_path,
+                    )
+
+                regen_result = self.vb_adapter.prepare_voicebank(
+                    [regen_char], output_dir,
+                )
+                if regen_result.success and speaker in regen_result.speaker_to_voice:
+                    new_wav = regen_result.speaker_to_voice[speaker]
+                    wav_path = new_wav
+                    current_char = regen_char
+                    # 注意：eval_char 保持不变（原始 voice_prompt），
+                    # current_char 更新为 regen_char（用于下一轮的 prev_result 反馈）
+                else:
+                    logger.warning(
+                        "voicebank_critic: %s 再生成失败，保留原 wav",
+                        speaker,
+                    )
+                    regen_record["regen_error"] = "adapter 返回 success=False 或 speaker 不在结果中"
+                    rh.append(regen_record)
+                    break
+            except (VoicebankError, Exception) as err:
+                logger.warning(
+                    "voicebank_critic: %s 再生成异常: %s，保留原 wav",
+                    speaker, err,
+                )
+                regen_record["regen_error"] = f"{type(err).__name__}: {err}"
+                rh.append(regen_record)
+                break
+
+            regen_record["new_wav_path"] = wav_path
+            rh.append(regen_record)
+
+        return sr, rh, rounds, regen_ct, logs, wav_path
 
     def _evaluate_speaker(
         self,
