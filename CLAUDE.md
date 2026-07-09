@@ -55,6 +55,7 @@ short_audiobook_agent/
 | LLM 适配层 | `llm/` | 统一 `BaseLLMClient`；多后端切换 | 故事业务 |
 | 音色层 | `voicebank/` | 统一 `BaseVoicebankAdapter`；生成角色参考 wav | 正文合成 |
 | 合成层 | `tts/` | 统一 `BaseTTSAdapter`；按指令合成每段 wav | 故事分析逻辑 |
+| 评估层 | `critic/` | `Qwen3OmniCritic`（5 维音频评分）+ `TTSRepairAgent`（LLM 改写 TTS 指令）。**当前未接入 pipeline，standalone** | TTS 是什么、部署在哪 |
 | 配置层 | `profiles/` | 一个 yaml = 一套完整 llm+voicebank+tts+output+pipeline 组合 | 业务逻辑 |
 | 工具层 | `utils/` | yaml / 文件 / 时间通用工具 | 当前 pipeline |
 
@@ -354,6 +355,7 @@ README.md 是 GitHub 仓库首页展示文件，必须与项目实际状态保�
 | `src_next_主链路运行及核心模块说明.md` | 需要运行命令 / 排障 / 扩展指引 |
 | `src_next/app/WEBUI_USAGE.md` | WebUI 部署 / 使用细节 |
 | `src_next/tts/S2PRO_ADAPTER_README.md` | S2Pro adapter 内部实现（含 8010 端口 / 音色克隆）|
+| `src_next/critic/README.md` | Critic + Repair 子链路（Qwen3-Omni 评分 + LLM 修复指令，当前 standalone 未接入 pipeline）|
 | `usage_guide_*.md`（项目根）| 各后端服务的接入细节（IP / 端口 / 鉴权 / curl 示例）|
 
 ---

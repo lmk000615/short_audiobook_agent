@@ -73,6 +73,7 @@ txt + profile
 | LLM | `qwen_http` / `gemma4_http` / `mock_llm` |
 | Voicebank | `qwen3_http` / `qwen_voicegenerator`（subprocess）/ `mock_voicebank` |
 | TTS | `cosyvoice_http` / `indextts_http` / `indextts`（subprocess）/ `s2pro_http` / `mock_tts` |
+| Critic（评估 + 修复，standalone） | `qwen3omni_critic`（Qwen3-Omni 5 维评分）+ `tts_repair`（LLM 改写指令）— 当前**未接入 pipeline** |
 
 **关键不变量**：`TTSInstruction` 是**模型无关的通用合成指令**，不带任何 backend 专用字段（如 `indextts_speed` / `cosyvoice_prompt`）。backend 专用参数由各 adapter 内部根据通用字段推断。这是分层边界的核心保证，破了会让 core / analysis 层被具体后端污染。
 
@@ -201,6 +202,7 @@ python -m src_next.app.gradio_webui --host 0.0.0.0 --port 7860
 | `src_next_主链路运行及核心模块说明.md` | 运行命令 / 排障路径 / 扩展指引 |
 | `src_next/app/WEBUI_USAGE.md` | WebUI 使用细节 |
 | `src_next/tts/S2PRO_ADAPTER_README.md` | S2Pro adapter 内部实现（含 8010 端口 / 音色克隆）|
+| `src_next/critic/README.md` | Critic + Repair 子链路（Qwen3-Omni 评分 + LLM 修复，standalone）|
 | `tests/audiobench_zh/README.md` | 中文测试集（30 条 adversarial 样例，按 8 类配比）|
 | `usage_guide_*.md`（项目根）| 各后端服务的接入细节（IP / 端口 / 鉴权 / curl 示例）|
 
