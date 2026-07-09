@@ -852,7 +852,7 @@ def run_pipeline(
 
         # ── Stage (8 或 9)/{total}: tts_synthesis ───────────────────
         if use_tts_director:
-            # 新链路：多 adapter 分组调度
+            # 新链路：多 adapter 并行分组调度
             step, name = f"8/{total_stages}", "tts_synthesis"
             _log_stage_start(step, name)
             t0 = time.time()
@@ -862,17 +862,43 @@ def run_pipeline(
             for inst in tts_instructions:
                 grouped.setdefault(inst.model, []).append(inst)
 
+            # 并行调度：每个 backend 的 adapter 在独立线程中运行
+            # （各 adapter 内部已有 max_workers 并发，此处并行的是不同 backend 之间）
             audio_segments_by_id: dict[str, Any] = {}
-            for model_name, group in grouped.items():
-                backend = all_configs[model_name]["backend"]  # model.name → backend key
+
+            def _synth_group(model_name: str, group: list) -> list:
+                backend = all_configs[model_name]["backend"]
                 backend_cfg = backends_yaml_data["backends"][backend]
                 adapter = create_adapter_for_backend(backend, **backend_cfg)
-                seg_results = adapter.synthesize(
+                return adapter.synthesize(
                     group, voicebank_result, str(output_dir),
                     dry_run=False, limit=0,
                 )
-                for r in seg_results:
-                    audio_segments_by_id[r.segment_id] = r
+
+            if len(grouped) <= 1:
+                # 单后端，无需线程池
+                for model_name, group in grouped.items():
+                    for r in _synth_group(model_name, group):
+                        audio_segments_by_id[r.segment_id] = r
+            else:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=len(grouped), thread_name_prefix="tts_grp") as grp_ex:
+                    future_to_model = {
+                        grp_ex.submit(_synth_group, mn, grp): mn
+                        for mn, grp in grouped.items()
+                    }
+                    for future in as_completed(future_to_model):
+                        model_name = future_to_model[future]
+                        try:
+                            seg_results = future.result()
+                            for r in seg_results:
+                                audio_segments_by_id[r.segment_id] = r
+                        except Exception as grp_err:
+                            print(
+                                f"[{step}] {name}: backend group {model_name} "
+                                f"failed entirely: {grp_err}",
+                                flush=True,
+                            )
 
             # 按 tts_instructions 顺序还原
             audio_segments = [
