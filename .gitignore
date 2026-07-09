@@ -41,4 +41,5 @@ output-src-next/
 output-src-next-analysis-test/
 output-src-next-pipeline/
 output/analysis/*.md
+docs/
 # <<< managed by push-with-output-ignore skill <<<

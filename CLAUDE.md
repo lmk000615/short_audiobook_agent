@@ -32,7 +32,7 @@ short_audiobook_agent/
 ├── input/             ← 故事样例 txt
 ├── output/            ← 历史运行产物
 ├── output-src-next/   ← src_next 默认输出根（profile 可覆盖）
-├── docs/              ← 历史设计文档
+├── docs/              ← 本地工作区（同事 critic 工作记录 + 自有设计文档，.gitignore 排除，不入 git）
 ├── notes/             ← 项目笔记
 ├── models/            ← 本地模型权重（不入 git）
 ├── config/            ← 旧链路配置（src_next 不用）
