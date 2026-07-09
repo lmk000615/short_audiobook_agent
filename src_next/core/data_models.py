@@ -567,6 +567,81 @@ class CriticResult:
 
 
 @dataclass
+class LongAudioSegmentScore:
+    """长音频评分中单个维度（emotion_expressiveness / rhythm / naturalness / clarity）的子评分。
+
+    与 CriticResult 的扁平 0-1 量纲不同：长音频评分保留 LLM 原始 0-10 量纲 +
+    A/B/C/D 等级 + 每维度独立的 reason / problems，方便事后回看具体扣分原因。
+
+    由 Qwen3OmniLongAudioCritic 内部 normalize_result() 填充。
+    """
+
+    score: float
+    grade: str
+    reason: str
+    problems: list[str]
+
+
+@dataclass
+class LongAudioCriticResult:
+    """整段长音频（典型为 audio_final/*.wav，~2 分钟有声书成品）的综合听感评分结果。
+
+    与 CriticResult（单段 TTS 修复循环用）的区别：
+    - 量纲：0-10 + A/B/C/D（CriticResult 是 0-1）
+    - 维度：4 维听感（CriticResult 是 5 维修复向）
+    - 用途：离线整本质检（CriticResult 是闭环修复）
+    - 结构：含 segment_details / meta（CriticResult 是单段扁平）
+
+    Attributes
+    ----------
+    audio_file : str
+        被评估音频的 basename（不含目录），用于产物归档与日志。
+    duration_seconds : float
+        音频总时长（秒）。
+    num_segments : int
+        实际发送给 omni 服务的段数（切片后）。1 = 整段发送。
+    segment_duration : float
+        切片时长（秒）。0 = 未切片（no_segment 模式）。
+    scores : dict[str, LongAudioSegmentScore]
+        4 个维度的子评分。key: emotion_expressiveness / rhythm / naturalness / clarity。
+        多段模式下 scores 是各段聚合后的均值（reason/problems 取最后一段或频次 top）。
+    overall_score : float
+        4 维均值，0-10。
+    overall_grade : str
+        A/B/C/D，由 overall_score 计算。
+    main_problems : list[str]
+        整段最主要的问题（top-3，多段模式下取频次最高）。
+    suggestions : list[str]
+        优化建议（top-3，多段模式下取频次最高）。
+    segment_details : list[dict]
+        每段的归一化 dict（含 _failed / _error 标记，用于排障）。调试用。
+    base_url : str
+        评分时调用的 omni 服务地址，便于复现。
+    timestamp : str
+        评分完成时的 ISO 时间戳。
+    total_inference_time : float
+        所有段 omni 调用的累计耗时（秒），不含切片/编码时间。
+    error : str | None
+        非 None 时表示全部段都失败了，调用方应人工复核。单段失败不影响此字段。
+    """
+
+    audio_file: str
+    duration_seconds: float
+    num_segments: int
+    segment_duration: float
+    scores: dict[str, LongAudioSegmentScore]
+    overall_score: float
+    overall_grade: str
+    main_problems: list[str]
+    suggestions: list[str]
+    segment_details: list[dict]
+    base_url: str
+    timestamp: str
+    total_inference_time: float
+    error: str | None = None
+
+
+@dataclass
 class SFXEvent:
     """
     段落间音效事件（一期：仅段间插入，不与语音叠加）。

@@ -9,8 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from src_next.core.data_models import CriticResult, ModelSpecificTTSInstruction
-from src_next.critic.persistence import save_critic_session
+from src_next.core.data_models import (
+    CriticResult,
+    LongAudioCriticResult,
+    LongAudioSegmentScore,
+    ModelSpecificTTSInstruction,
+)
+from src_next.critic.persistence import save_critic_session, save_long_audio_critic_session
 
 
 # ── fixtures ────────────────────────────────────────────────────────────────
@@ -208,3 +213,87 @@ def test_missing_audio_raises_file_not_found(tmp_path):
             critic_result=_make_critic_result(),
             output_root=out,
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# save_long_audio_critic_session() tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_long_audio_segment_score(score: float = 8.5) -> LongAudioSegmentScore:
+    return LongAudioSegmentScore(
+        score=score,
+        grade="A" if score >= 7.5 else "B" if score >= 5.0 else "C" if score >= 2.5 else "D",
+        reason="听感自然舒服",
+        problems=[],
+    )
+
+
+def _make_long_audio_result(audio_file: str = "story_final.wav") -> LongAudioCriticResult:
+    return LongAudioCriticResult(
+        audio_file=audio_file,
+        duration_seconds=120.0,
+        num_segments=4,
+        segment_duration=30.0,
+        scores={
+            "emotion_expressiveness": _make_long_audio_segment_score(8.5),
+            "rhythm": _make_long_audio_segment_score(8.0),
+            "naturalness": _make_long_audio_segment_score(9.0),
+            "clarity": _make_long_audio_segment_score(9.5),
+        },
+        overall_score=8.75,
+        overall_grade="A",
+        main_problems=[],
+        suggestions=["增强情感起伏。"],
+        segment_details=[{"_inference_time": 12.3}],
+        base_url="http://10.50.121.102:8011",
+        timestamp="2026-07-09T12:00:00",
+        total_inference_time=49.2,
+        error=None,
+    )
+
+
+def test_save_long_audio_session_writes_scoring_and_audio(tmp_path):
+    """save_long_audio_critic_session() 应该写出 scoring.json + 音频副本。"""
+    audio = tmp_path / "story_final.wav"
+    audio.write_bytes(b"fake long audio bytes")
+
+    out = tmp_path / "out"
+    folder = save_long_audio_critic_session(
+        audio_path=audio,
+        result=_make_long_audio_result(),
+        output_root=out,
+    )
+
+    assert (folder / "scoring.json").is_file()
+    assert (folder / "story_final.wav").is_file()
+    assert (folder / "story_final.wav").read_bytes() == b"fake long audio bytes"
+
+    scoring = json.loads((folder / "scoring.json").read_text(encoding="utf-8"))
+    assert scoring["overall_score"] == pytest.approx(8.75)
+    assert scoring["overall_grade"] == "A"
+    assert scoring["audio_file"] == "story_final.wav"
+    assert set(scoring["scores"].keys()) == {"emotion_expressiveness", "rhythm", "naturalness", "clarity"}
+    assert scoring["scores"]["emotion_expressiveness"]["score"] == pytest.approx(8.5)
+    # 中文不被 \u 转义
+    assert "增强情感起伏" in (folder / "scoring.json").read_text(encoding="utf-8")
+
+
+def test_save_long_audio_session_uses_nested_folder(tmp_path):
+    """目录结构应该是 <root>/critic/long_audio/<stem>/（嵌套在 critic/ 下，不是顶层 critic_long_audio/）。"""
+    audio = tmp_path / "story_final.wav"
+    audio.write_bytes(b"x")
+
+    out = tmp_path / "out"
+    folder = save_long_audio_critic_session(
+        audio_path=audio,
+        result=_make_long_audio_result(),
+        output_root=out,
+    )
+
+    # folder 路径必须是 out/critic/long_audio/story_final/
+    assert folder == out / "critic" / "long_audio" / "story_final"
+    assert folder.name == "story_final"
+    assert folder.parent.name == "long_audio"
+    assert folder.parent.parent.name == "critic"
+    # 不是顶层 critic_long_audio
+    assert not (out / "critic_long_audio").exists()

@@ -8,6 +8,9 @@
 - 默认输出根目录 = 项目根 / output（可通过 output_root 参数覆盖）
 - 同名音频重评覆盖既有文件（不版本化；attempt 字段在 JSON 内体现）
 - repair.json 仅当传入 repair_result 时才写
+
+save_long_audio_critic_session() 是对称的长音频版本：归档到
+<output_root>/critic/long_audio/<audio_stem>/ 下。
 """
 from __future__ import annotations
 
@@ -15,7 +18,11 @@ import dataclasses
 import shutil
 from pathlib import Path
 
-from src_next.core.data_models import CriticResult, ModelSpecificTTSInstruction
+from src_next.core.data_models import (
+    CriticResult,
+    LongAudioCriticResult,
+    ModelSpecificTTSInstruction,
+)
 from src_next.utils.file_utils import save_json_file
 
 
@@ -65,6 +72,44 @@ def save_critic_session(
     if repair_result is not None:
         save_json_file(dataclasses.asdict(repair_result), folder / "repair.json")
 
+    shutil.copy2(audio_path, folder / audio_path.name)
+
+    return folder
+
+
+def save_long_audio_critic_session(
+    audio_path: str | Path,
+    result: LongAudioCriticResult,
+    output_root: str | Path | None = None,
+) -> Path:
+    """把一次长音频 critic 评估的产物落盘到 <output_root>/critic/long_audio/<audio_stem>/。
+
+    与 save_critic_session 对称，但目录多嵌套一层 long_audio/，避免和分段 critic
+    产物混在一起。
+
+    Args:
+        audio_path: 被评估的音频文件路径。必须存在。
+        result: Qwen3OmniLongAudioCritic.evaluate() 的返回值。
+        output_root: 输出根目录；None 时默认项目根的 output/。
+
+    Returns:
+        实际写入的文件夹路径（<output_root>/critic/long_audio/<audio_stem>/）。
+
+    写入文件:
+        - scoring.json   ← LongAudioCriticResult 序列化（dataclasses.asdict，含 segment_details 内嵌）
+        - <audio_filename>  ← 输入音频的副本（保留原文件名与扩展名）
+
+    同名音频重评时覆盖既有文件（不版本化）。
+    """
+    audio_path = Path(audio_path)
+    if not audio_path.is_file():
+        raise FileNotFoundError(f"audio file not found: {audio_path}")
+
+    root = Path(output_root) if output_root is not None else _default_output_root()
+    folder = root / "critic" / "long_audio" / audio_path.stem
+    folder.mkdir(parents=True, exist_ok=True)
+
+    save_json_file(dataclasses.asdict(result), folder / "scoring.json")
     shutil.copy2(audio_path, folder / audio_path.name)
 
     return folder
