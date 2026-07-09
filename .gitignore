@@ -34,3 +34,11 @@ debug_resolve.py
 
 # Drawings / large local files
 *.eddx
+
+# >>> managed by push-with-output-ignore skill >>>
+output/
+output-src-next/
+output-src-next-analysis-test/
+output-src-next-pipeline/
+output/analysis/*.md
+# <<< managed by push-with-output-ignore skill <<<
