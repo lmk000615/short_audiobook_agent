@@ -66,9 +66,15 @@ class _FakeOkResponse:
         return _json.dumps(self.json())
 
 
-def test_evaluate_returns_critic_result_on_success(monkeypatch):
+def test_evaluate_returns_critic_result_on_success(monkeypatch, tmp_path):
     """Mock 200 + valid nested scoring JSON → CriticResult with parsed + normalized scores."""
+    import base64 as _b64
+
     import src_next.critic.qwen3omni_critic as mod
+
+    # base64 encoding now requires reading real file bytes — write a tiny stub file
+    audio_path = tmp_path / "seg.wav"
+    audio_path.write_bytes(b"fake wav bytes")
 
     captured = {}
 
@@ -85,13 +91,13 @@ def test_evaluate_returns_critic_result_on_success(monkeypatch):
     critic = Qwen3OmniCritic()
     seg, inst = _make_segment_and_instruction()
 
-    result = critic.evaluate("/fake/path.wav", seg, inst)
+    result = critic.evaluate(str(audio_path), seg, inst)
 
-    # Verify HTTP call shape
-    assert captured["url"] == "http://10.50.121.102:8011/v1/omni/audio_analysis"
-    assert captured["json"]["audio"] == "/fake/path.wav"
-    assert captured["json"]["task"] == "sound_analysis"
-    assert "text" in captured["json"]  # scoring prompt
+    # Verify HTTP call shape — /v1/omni/chat + base64 audio (no task field)
+    assert captured["url"] == "http://10.50.121.102:8011/v1/omni/chat"
+    assert "task" not in captured["json"]                  # task field removed for chat endpoint
+    assert "text" in captured["json"]                      # scoring prompt still present
+    assert _b64.b64decode(captured["json"]["audio"]) == b"fake wav bytes"  # audio is base64-encoded
     assert captured["proxies"] == {"http": None, "https": None}
 
     # Verify returned CriticResult — 0-10 scores normalized to 0-1

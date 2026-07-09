@@ -1,18 +1,21 @@
 """Qwen3-Omni 音频评估客户端。
 
-调 Qwen3-Omni 服务的 /v1/omni/audio_analysis 端点（黄区 10.50.121.102:8011），
-让模型"听"一段 TTS 合成音频，输出 5 维评分 + 修复建议。
+调 Qwen3-Omni 服务的 /v1/omni/chat 端点（黄区 10.50.121.102:8011），
+让模型"听"一段 TTS 合成音频（base64 编码），输出 5 维评分 + 修复建议。
 
 ⚠️ 服务端有 infer_lock，同一时间只处理一个请求——本客户端不做并发，
 上层 pipeline 必须串行调用（不要用 ThreadPoolExecutor 包 evaluate）。
 
-⚠️ API 风险：task card 推荐 audio_analysis + text 字段，但 API 文档未明确支持 text。
-如果服务返回的不是评分 JSON，按 KNOWN_ISSUES.md §2 切换到 /v1/omni/chat。
+历史：task card §1.4 原推荐 /v1/omni/audio_analysis + 文件路径，但真实服务测试
+发现该端点不接受文件路径形式的 audio 字段。已切换到 /v1/omni/chat + base64 音频，
+详见 KNOWN_ISSUES.md §2 的决策记录。
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
+from pathlib import Path
 
 import requests
 
@@ -150,14 +153,14 @@ class Qwen3OmniCritic:
         tts_instruction: ModelSpecificTTSInstruction,
     ) -> CriticResult:
         prompt_text = build_critic_prompt(segment, tts_instruction)
+        audio_b64 = base64.b64encode(Path(audio_path).read_bytes()).decode("ascii")
         payload = {
-            "audio": audio_path,
-            "task": "sound_analysis",
+            "audio": audio_b64,
             "text": prompt_text,
             "return_audio": False,
             "max_new_tokens": 1024,
         }
-        url = f"{self.base_url}/v1/omni/audio_analysis"
+        url = f"{self.base_url}/v1/omni/chat"
         resp = requests.post(
             url,
             json=payload,
@@ -166,12 +169,12 @@ class Qwen3OmniCritic:
         )
         if resp.status_code != 200:
             raise RuntimeError(
-                f"audio_analysis returned HTTP {resp.status_code}: {resp.text[:200]!r}"
+                f"omni/chat returned HTTP {resp.status_code}: {resp.text[:200]!r}"
             )
         data = resp.json()
         raw_text = str(data.get("text", ""))
         if not raw_text:
-            raise RuntimeError("audio_analysis returned empty text field")
+            raise RuntimeError("omni/chat returned empty text field")
         scoring = _parse_scoring_json(raw_text)
         flat = _normalize_nested_scoring(scoring, segment.segment_id, tts_instruction.attempt)
         return CriticResult.from_json(flat, attempt=tts_instruction.attempt)
