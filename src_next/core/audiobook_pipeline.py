@@ -76,8 +76,10 @@ from .data_models import (
     ModelSpecificTTSInstruction,
     PipelineResult,
     Segment,
+    SpeakerCriticResult,
     StoryInput,
     TTSInstruction,
+    VoicebankCriticResult,
     VoicebankResult,
 )
 from .logging_utils import StageLogger, log_item, log_stage_done, log_stage_start
@@ -660,6 +662,7 @@ def run_pipeline(
         t0 = time.time()
         voicebank_result_path = json_dir / "voicebank_result.json"
         mode = "run"
+        vb_adapter = None
         if reuse:
             reused = _try_load_json(voicebank_result_path, _load_voicebank_result)
             if reused is not None:
@@ -683,6 +686,57 @@ def run_pipeline(
             _log_stage_reused(step, name, voicebank_result_path.name, elapsed)
         else:
             _log_stage_done(step, name, elapsed, extra=f"voices={n_voices}")
+
+        # ── Stage 6b: voicebank_critic（可选后置子步骤）─────────────
+        # [CRITIC-LOG-BLOCK-START] ← 注释掉本块即可隐藏 critic 终端输出
+        critic_config = pipeline_cfg.get("voicebank_critic", {})
+        critic_result: VoicebankCriticResult | None = None
+        if bool(critic_config.get("enabled", False)):
+            # reuse 模式下需要重新创建 vb_adapter 供 critic 再生成用
+            if vb_adapter is None:
+                vb_backend, vb_cfg = _split_backend_block(profile_dict, "voicebank")
+                vb_adapter = create_voicebank_adapter(vb_backend, **vb_cfg)
+            critic_step = f"6b/{total_stages}"
+            _log_stage_start(critic_step, "voicebank_critic")
+            t0_critic = time.time()
+            from src_next.voicebank.voicebank_critic import run_voicebank_critic
+            critic_result = run_voicebank_critic(
+                characters=characters,
+                voicebank_result=voicebank_result,
+                llm_client=llm_client,
+                vb_adapter=vb_adapter,
+                output_dir=str(output_dir),
+                critic_config=critic_config,
+            )
+            # 落盘 critic 结果
+            critic_result_path = json_dir / "voicebank_critic_result.json"
+            _save_json(critic_result, critic_result_path)
+            if save_json:
+                artifacts["voicebank_critic_result"] = str(critic_result_path)
+            if critic_result.regen_history:
+                regen_history_path = json_dir / "voicebank_critic_regen_history.json"
+                _save_json(critic_result.regen_history, regen_history_path)
+                if save_json:
+                    artifacts["voicebank_critic_regen_history"] = str(regen_history_path)
+            # 更新 voicebank_result JSON（critic 可能就地更新了 speaker_to_voice）
+            if save_json:
+                _save_json(voicebank_result, voicebank_result_path)
+            # ── 汇总行 ──────────────────────────────────────────────
+            from src_next.voicebank.voicebank_critic import (
+                _format_critic_summary,
+            )
+            critic_elapsed = time.time() - t0_critic
+            critic_summary = _format_critic_summary(critic_result)
+            _log_stage_done(critic_step, "voicebank_critic", critic_elapsed,
+                            extra=critic_summary)
+            # 在 voicebank stage record 中追加 critic 信息
+            if stages and stages[-1].get("stage") == "voicebank":
+                stages[-1]["critic"] = {
+                    "enabled": True,
+                    "speakers_regen": critic_result.speakers_regen,
+                    "speakers_improved": critic_result.speakers_improved,
+                }
+        # [CRITIC-LOG-BLOCK-END]
 
         # ── Stage 7/{total}: tts_director 或 story_director ─────────
         if use_tts_director:
@@ -1230,6 +1284,7 @@ def run_pipeline_stream(
         t0 = time.time()
         voicebank_result_path = json_dir / "voicebank_result.json"
         mode = "run"
+        vb_adapter = None
         if reuse:
             reused = _try_load_json(voicebank_result_path, _load_voicebank_result)
             if reused is not None:
@@ -1259,6 +1314,63 @@ def run_pipeline_stream(
             yield _make_event("stage_done", step=step, name=name, stage_index=6,
                               elapsed_sec=elapsed, extra=extra,
                               cumulative_sec=time.time() - t_total_start)
+
+        # ── Stage 6b: voicebank_critic（可选后置子步骤）─────────────
+        # [CRITIC-LOG-BLOCK-START] ← 注释掉本块即可隐藏 critic 终端输出
+        critic_config = pipeline_cfg.get("voicebank_critic", {})
+        critic_result: VoicebankCriticResult | None = None
+        if bool(critic_config.get("enabled", False)):
+            # reuse 模式下需要重新创建 vb_adapter 供 critic 再生成用
+            if vb_adapter is None:
+                vb_backend, vb_cfg = _split_backend_block(profile_dict, "voicebank")
+                vb_adapter = create_voicebank_adapter(vb_backend, **vb_cfg)
+            critic_step = f"6b/{total_stages}"
+            logger.stage_start(critic_step, "voicebank_critic")
+            yield _make_event("stage_start", step=critic_step, name="voicebank_critic",
+                              stage_index=6, total_stages=total_stages)
+            t0_critic = time.time()
+            from src_next.voicebank.voicebank_critic import run_voicebank_critic
+            critic_result = run_voicebank_critic(
+                characters=characters,
+                voicebank_result=voicebank_result,
+                llm_client=llm_client,
+                vb_adapter=vb_adapter,
+                output_dir=str(output_dir),
+                critic_config=critic_config,
+            )
+            # 落盘 critic 结果
+            critic_result_path = json_dir / "voicebank_critic_result.json"
+            _save_json(critic_result, critic_result_path)
+            if save_json:
+                artifacts["voicebank_critic_result"] = str(critic_result_path)
+            if critic_result.regen_history:
+                regen_history_path = json_dir / "voicebank_critic_regen_history.json"
+                _save_json(critic_result.regen_history, regen_history_path)
+                if save_json:
+                    artifacts["voicebank_critic_regen_history"] = str(regen_history_path)
+            # 更新 voicebank_result JSON（critic 可能就地更新了 speaker_to_voice）
+            if save_json:
+                _save_json(voicebank_result, voicebank_result_path)
+            # ── 汇总行 ──────────────────────────────────────────────
+            from src_next.voicebank.voicebank_critic import (
+                _format_critic_summary,
+            )
+            critic_elapsed = time.time() - t0_critic
+            critic_summary = _format_critic_summary(critic_result)
+            logger.stage_done(critic_step, "voicebank_critic", critic_elapsed,
+                              extra=critic_summary)
+            yield _make_event("stage_done", step=critic_step, name="voicebank_critic",
+                              stage_index=6, elapsed_sec=critic_elapsed,
+                              extra=critic_summary,
+                              cumulative_sec=time.time() - t_total_start)
+            # 在 voicebank stage record 中追加 critic 信息
+            if stages and stages[-1].get("stage") == "voicebank":
+                stages[-1]["critic"] = {
+                    "enabled": True,
+                    "speakers_regen": critic_result.speakers_regen,
+                    "speakers_improved": critic_result.speakers_improved,
+                }
+        # [CRITIC-LOG-BLOCK-END]
 
         # ── Stage 7/{total}: tts_director 或 story_director ─────────
         if use_tts_director:

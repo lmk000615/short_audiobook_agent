@@ -47,9 +47,13 @@ voicebank:
     language: "Chinese"
     reference_text: "你好，欢迎使用语音设计功能，这是一个测试句子。"
     # 单角色 voicedesign 请求超时（秒）
-    timeout_per_char: 60
-    # 并发线程数（角色通常 3-5 个，4 线程足够把总耗时压到接近单次请求）
-    max_workers: 4
+    # Qwen3 VoiceDesign 是 GPU 模型，并发时单请求可能需要 60s+，
+    # 设 120s 留足余量，避免并发排队导致超时
+    timeout_per_char: 120
+    # 并发线程数
+    # Qwen3 VoiceDesign 服务器单 GPU，并发过高会排队阻塞导致超时；
+    # 2 线程在角色 3-5 个时总耗时 ≈ 2 轮请求，比串行快又不压垮服务器
+    max_workers: 2
     # 黄区内网调用必须 bypass 开发机全局代理
     bypass_proxy: true
 
@@ -86,6 +90,11 @@ pipeline:
   save_intermediate_json: true
   reuse_existing: false
   stop_on_tts_error: false
+  voicebank_critic:
+    enabled: true
+    max_retries: 2
+    score_threshold: 0.6
+    gender_threshold: 0.7
 
 notes:
   - "黄区所有模型走内网 HTTP，不走 subprocess / WSL / 本地 venv。"

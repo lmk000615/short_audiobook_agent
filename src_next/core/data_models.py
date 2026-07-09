@@ -381,6 +381,97 @@ class PipelineResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Voicebank Critic 产物
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class SpeakerCriticResult:
+    """单角色音色评估结果（Voicebank Critic 输出）。
+
+    出现在数据流的：
+        voicebank_result → voicebank_critic.evaluate() → SpeakerCriticResult[]
+
+    定位：**Voicebank Stage 后置质量评估**。对每个 speaker 的 voice_ref wav
+    做四维评分（性别匹配 / 年龄匹配 / 音色匹配 / 清晰度），低于阈值时触发
+    单角色再生成。
+
+    Attributes
+    ----------
+    speaker : str
+        角色名。
+    overall_score : float
+        综合评分 0.0~1.0。
+    gender_match_score : float
+        性别匹配度 0.0~1.0。
+    age_match_score : float
+        年龄匹配度 0.0~1.0。
+    timbre_match_score : float
+        音色匹配度 0.0~1.0。
+    clarity_score : float
+        清晰度 0.0~1.0。
+    issues : list[str]
+        问题列表（如"性别不匹配：期望男声，实际偏女声"）。
+    suggestion : str
+        改进建议（自然语言，用于修正 voice_prompt）。
+    should_regen : bool
+        是否建议重新生成。
+    revised_voice_prompt : str | None
+        建议修改后的 voice_prompt（仅 should_regen=True 时）。
+    wav_path : str
+        当前评估的 wav 路径。
+    round_index : int
+        第几轮评估（0=首次，1=第一次再生成后...）。
+    """
+
+    speaker: str
+    overall_score: float = 0.0
+    gender_match_score: float = 0.0
+    age_match_score: float = 0.0
+    timbre_match_score: float = 0.0
+    clarity_score: float = 0.0
+    issues: list[str] = field(default_factory=list)
+    suggestion: str = ""
+    should_regen: bool = False
+    revised_voice_prompt: str | None = None
+    wav_path: str = ""
+    round_index: int = 0
+
+
+@dataclass
+class VoicebankCriticResult:
+    """Voicebank Critic 整体评估结果。
+
+    出现在数据流的：
+        SpeakerCriticResult[] → VoicebankCriticResult → 落盘 json/voicebank_critic_result.json
+
+    Critic **不修改** VoicebankResult 的结构；若有角色被再生成，直接就地更新
+    voicebank_result.speaker_to_voice 中对应 speaker 的 wav 路径。
+    下游 TTS 消费的仍是同一个 voicebank_result，不感知 Critic 存在。
+
+    Attributes
+    ----------
+    speaker_results : list[SpeakerCriticResult]
+        每个角色的最终评估。
+    regen_history : list[dict]
+        每轮再生成记录（原始 prompt / 评分 / 修订 prompt / 新评分 / wav 路径）。
+    enabled : bool
+        是否启用。
+    total_rounds : int
+        总评估轮数。
+    speakers_regen : int
+        触发再生成的角色数。
+    speakers_improved : int
+        再生成后评分提升的角色数。
+    """
+
+    speaker_results: list[SpeakerCriticResult] = field(default_factory=list)
+    regen_history: list[dict] = field(default_factory=list)
+    enabled: bool = False
+    total_rounds: int = 0
+    speakers_regen: int = 0
+    speakers_improved: int = 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Audio-Oscar 改造新增数据契约
 #
 # 以下三个 dataclass 用于支持借鉴 Audio-Oscar 架构的扩展开发：

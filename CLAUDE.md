@@ -99,6 +99,7 @@ short_audiobook_agent/
 | 4/9 story_resolver | 同上 | 同上 |
 | 5/9 character_analyzer | 同上 | 同上 |
 | 6/9 voicebank | 同上 | 同上 |
+| 6b voicebank_critic（可选） | `voicebank/voicebank_critic.py` | `voicebank_critic_result.json` + `voicebank_critic_regen_history.json` |
 | **7/9 tts_director**（合并老 7+8） | `analysis/tts_director.py` | `tts_instructions.json`（含 `ModelSpecificTTSInstruction[]`）|
 | 8/9 tts_synthesis | `tts/*` 多 adapter 分组调度（按 `instruction.model`） | `audio_segment_results.json` + `audio_segments/<seg_id>.wav` |
 | 9/9 audio_merger | `core/audio_merger.py`（`pause_map={}`，新格式无 `pause_hint`）| `audio_result.json` + `audio_final/<story>.wav` |
@@ -144,6 +145,37 @@ pipeline:   # save_intermediate_json / reuse_existing / stop_on_tts_error
 ```
 
 可选：`webui.display_name` / `*.extra_args`（如 `max_workers` / `bypass_proxy`）。
+
+### `pipeline.voicebank_critic` 开关（Stage 6 后置子步骤）
+
+默认关闭。启用后对 Stage 6 voicebank 生成的角色音色参考 wav 做四维评分（性别匹配 / 年龄匹配 / 音色匹配 / 清晰度），低于阈值时触发单角色再生成。
+
+触发再生成的条件（任一满足即触发）：
+1. `overall_score < score_threshold`
+2. `gender_match_score < gender_threshold`
+3. 任一维度 ≤ 0.4（单维度严重短板）
+4. 两个及以上维度 < 0.6（多维度偏差叠加）
+
+```yaml
+pipeline:
+  voicebank_critic:
+    enabled: false              # 默认关闭
+    max_retries: 2              # 最大再生成次数
+    score_threshold: 0.6        # overall_score 低于此值触发再生成
+    gender_threshold: 0.7       # gender_match 低于此值强制触发再生成
+```
+
+Critic 不是独立 stage，而是 Stage 6 的后置子步骤（6b）。启用后：
+- 终端日志体现为 `[6/N] voicebank ... done in Xs, voices=4` 后接 `[6b/N] voicebank_critic ... done in Xs, N speakers, X PASS, Y regen(Z improved), W still below threshold`（仅汇总行，不展开逐角色评分）
+- `json/voicebank_critic_result.json` + `json/voicebank_critic_regen_history.json` 落盘
+- `voicebank/critic.log` 落盘（人可读的评估日志，含逐角色评分详情 + Final Selection 段标注每个角色最终选用的 wav 版本）
+- `pipeline_result.json` 的 voicebank stage record 增加 `critic` 字段
+- 下游 TTS 消费的仍是同一个 `voicebank_result`，不感知 Critic 存在
+
+再生成机制关键设计：
+- **评估基准不变**：始终用原始 voice_prompt 评估，revised_voice_prompt 仅用于驱动再生成，避免目标漂移
+- **旧 wav 删除后再生**：再生成前删除旧 wav，避免 voicebank adapter 缓存跳过
+- **无变化早停**：若再生成后音频物理特征（基频/RMS/时长）无实质变化，说明 TTS 模型无法通过 prompt 调整，立即停止重试
 
 ### `pipeline.use_tts_director` 开关（Audio-Oscar 方向1，新）
 
@@ -213,12 +245,15 @@ CLI 模式：
 │   ├── resolved_segments.json       # stage 4
 │   ├── characters.json              # stage 5
 │   ├── voicebank_result.json        # stage 6
+│   ├── voicebank_critic_result.json # stage 6b（可选，voicebank_critic 启用时）
+│   ├── voicebank_critic_regen_history.json  # stage 6b 再生成记录（可选）
 │   ├── director_plan.json           # stage 7
 │   ├── tts_instructions.json        # stage 8
 │   ├── audio_segment_results.json   # stage 9（含每段成败）
 │   ├── audio_result.json            # stage 10
 │   └── pipeline_result.json         # 汇总（排障首选）
 ├── voicebank/<speaker>.wav
+├── voicebank/critic.log              # stage 6b 评估日志（可选，人可读）
 ├── audio_segments/<seg_id>.wav
 ├── audio_final/<story>.wav
 └── logs/pipeline.log                # 含 ISO 时间戳
