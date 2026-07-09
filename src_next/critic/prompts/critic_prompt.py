@@ -188,7 +188,7 @@ def build_critic_prompt(
     segment: Segment,
     tts_instruction: ModelSpecificTTSInstruction,
 ) -> str:
-    """Build the scoring prompt for audio_analysis's text field.
+    """Build the scoring prompt for /v1/omni/chat's text field.
 
     Embeds original text + speaker + expected emotion as the "expected" side of the
     Audio-Oscar "Expected vs Actual" pattern, so the Critic can do semantic alignment.

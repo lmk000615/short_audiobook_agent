@@ -56,11 +56,13 @@
 | `__init__.py` | 包导出 |
 | `qwen3omni_critic.py` | `Qwen3OmniCritic` 主类，HTTP 调 Qwen3-Omni 评分 + neutral fallback |
 | `tts_repair.py` | `TTSRepairAgent` 主类，LLM 改写 TTS 指令 + frozen 字段保护 |
+| `persistence.py` | `save_critic_session()` helper：把评分+修复+音频归档到 `output/critic/<audio_stem>/` |
 | `prompts/__init__.py` | prompt 子包 |
 | `prompts/critic_prompt.py` | Critic 的 prompt 模板（5 维评分要求 + JSON 输出格式）|
 | `prompts/repair_prompt.py` | Repair 的 prompt 模板（评分反馈 → 改写指令）|
 | `tests/test_qwen3omni_critic.py` | Critic 测试（构造 / 解析 / 兜底 / merge / 契约 / integration skip）|
 | `tests/test_tts_repair.py` | Repair 测试（行为 / frozen 字段 / LLM raise fallback / integration skip）|
+| `tests/test_persistence.py` | 持久化测试（scoring-only / scoring+repair / 音频复制 / 命名 / 覆盖）|
 | `tests/conftest.py` | pytest fixtures（mock LLM / mock 音频路径 / schema 校验）|
 | `KNOWN_ISSUES.md` | 已知 gap + 服务激活指引 + API 端点风险 |
 | `README.md` | 本文件 |
@@ -132,20 +134,52 @@ Critic + Repair 当前**未接入** `core/audiobook_pipeline.py`。集成时的�
 - `original` 参数当前指"当前指令"；若要 frozen-original 语义（Audio-Oscar §D.23），调用方需自己保存 attempt=1 的指令并传入
 - `needs_repair()` 已挂在 `CriticResult`（在 `core/data_models.py`），用 `min(dims) < threshold OR overall < overall_floor` 判定
 
+### 4.4 落盘评分与修复产物
+
+调用 `evaluate()` / `repair()` 后，可用 `save_critic_session()` 把结果归档到本地，便于事后回看与调试：
+
+```python
+from src_next.critic import save_critic_session
+from src_next.critic.qwen3omni_critic import Qwen3OmniCritic
+from src_next.critic.tts_repair import TTSRepairAgent
+
+critic = Qwen3OmniCritic(...)
+repair = TTSRepairAgent(llm_client=...)
+
+result = critic.evaluate("/path/to/seg.wav", segment, instruction)
+new_inst = (
+    repair.repair(original=instruction, segment=segment, critic=result)
+    if result.needs_repair(threshold=0.7, overall_floor=0.6)
+    else None
+)
+
+folder = save_critic_session(
+    audio_path="/path/to/seg.wav",
+    critic_result=result,
+    repair_result=new_inst,        # None 时不写 repair.json
+    # output_root=None → 默认项目根 output/
+)
+# folder = output/critic/seg/
+#   ├── scoring.json   (CriticResult 序列化：5 维分 + overall + suggestions + attempt)
+#   ├── repair.json    (修复后的 ModelSpecificTTSInstruction；未触发修复则无此文件)
+#   └── seg.wav        (输入音频的副本，便于文件夹自包含)
+```
+
+行为约定：
+- 文件夹名 = `Path(audio_path).stem`（去扩展名），如 `seg_001.wav` → `output/critic/seg_001/`
+- 同名音频重评**覆盖**既有文件（不版本化）；attempt 字段记录在 JSON 内
+- 默认输出根 = 项目根 `output/`，可通过 `output_root=` 覆盖（如未来接入 pipeline 时改用 profile 的 `output.root`）
+- `audio_path` 不存在会抛 `FileNotFoundError`
+
 ---
 
 ## 5. ⚠️ 已知风险（详见 KNOWN_ISSUES.md）
 
-### 5.1 API 端点不确定性
+### 5.1 API 端点（已敲定：`/v1/omni/chat` + base64 音频）
 
-`qwen3omni_critic.py` 用 `/v1/omni/audio_analysis + text` 字段（per 任务卡 §1.4）。但 API 文档（`usage_guide_qwen3_omni.md` §8）只列了 `audio / task / return_audio / speaker / max_new_tokens` 五个字段，`text` 未列。
+`qwen3omni_critic.py::_evaluate_inner` 当前调 `/v1/omni/chat` 端点，音频以 **base64 编码字符串** 形式传入 `audio` 字段。该路径已于 2026-07-09 经真实服务测试验证可行。
 
-如果真实服务：
-- 接受 `text` → 正常工作
-- 忽略 `text` → 触发 neutral 0.5 fallback
-- 报 400 → 同样触发 fallback
-
-**一行切换到 `/v1/omni/chat`**：见 [`KNOWN_ISSUES.md §2`](./KNOWN_ISSUES.md)。
+**为什么不走 task card §1.4 推荐的 `/v1/omni/audio_analysis`**：真实服务测试发现该端点不接受本地文件路径形式的 `audio` 字段，task card 设想的 (a) 路径不成立，触发了预判的 (b) 风险场景。详见 [`KNOWN_ISSUES.md §2`](./KNOWN_ISSUES.md) 的历史决策记录。
 
 ### 5.2 测试音频 fixture 未实际准备
 
