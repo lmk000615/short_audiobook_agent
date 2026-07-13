@@ -277,8 +277,8 @@ class CosyVoiceHTTPAdapter(BaseTTSAdapter):
             - zero_shot 模式：prompt_text = "<|endofprompt|>"
 
         voice_ref 优先取 instruction.voice_ref，否则 fallback 到
-        voicebank_result.speaker_to_voice[speaker]。voice_ref 以**路径字符串**
-        传入 prompt_audio（CosyVoice3 server 接受 base64 或路径）。
+        voicebank_result.speaker_to_voice[speaker]。voice_ref 读取后 
+        base64 编码传入 prompt_audio（与 _synthesize_one 一致）。
 
         单段失败不阻断其他段（沿用老路径行为）。
         """
@@ -325,6 +325,22 @@ class CosyVoiceHTTPAdapter(BaseTTSAdapter):
                 ))
                 continue
 
+            # voice_ref 必须转 base64（与 _synthesize_one 一致）
+            # CosyVoice3 server 要求 prompt_audio 为 base64 编码的音频数据，
+            # 直接传文件路径字符串会返回 "Invalid prompt_audio format"
+            voice_ref_path = Path(voice_ref)
+            if not voice_ref_path.exists() or voice_ref_path.stat().st_size == 0:
+                results.append(AudioSegmentResult(
+                    segment_id=seg_id, speaker=inst.speaker,
+                    audio_path=None, success=False,
+                    error=f"voice_ref wav missing/empty: {voice_ref}",
+                ))
+                continue
+            
+            voice_b64 = base64.b64encode(
+                voice_ref_path.read_bytes()
+            ).decode("ascii")
+
             if dry_run:
                 results.append(AudioSegmentResult(
                     segment_id=seg_id, speaker=inst.speaker,
@@ -348,7 +364,7 @@ class CosyVoiceHTTPAdapter(BaseTTSAdapter):
             payload: dict[str, Any] = {
                 "text": text_field,
                 "prompt_text": prompt_text_field,
-                "prompt_audio": voice_ref,  # 路径字符串
+                "prompt_audio": voice_b64,  # base64 编码的音频数据
                 "mode": mode,
                 "stream": False,
             }
