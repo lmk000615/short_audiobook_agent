@@ -11,6 +11,10 @@
 
 save_long_audio_critic_session() 是对称的长音频版本：归档到
 <output_root>/critic/long_audio/<audio_stem>/ 下。
+
+save_attribute_critic_session() 是属性感知版本的归档函数：归档到
+<output_root>/critic/<audio_stem>/（与 save_critic_session 同目录），
+scoring.json 内嵌 extracted/expected/consistency 三段。
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ from src_next.core.data_models import (
     LongAudioCriticResult,
     ModelSpecificTTSInstruction,
 )
+from src_next.critic.attribute_result import AttributeAwareCriticResult
 from src_next.utils.file_utils import save_json_file
 
 
@@ -110,6 +115,54 @@ def save_long_audio_critic_session(
     folder.mkdir(parents=True, exist_ok=True)
 
     save_json_file(dataclasses.asdict(result), folder / "scoring.json")
+    shutil.copy2(audio_path, folder / audio_path.name)
+
+    return folder
+
+
+def save_attribute_critic_session(
+    audio_path: str | Path,
+    result: AttributeAwareCriticResult,
+    repair_result: ModelSpecificTTSInstruction | None = None,
+    output_root: str | Path | None = None,
+) -> Path:
+    """把一次属性感知 critic 评估的产物落盘到 output/critic/<audio_stem>/。
+
+    与 ``save_critic_session`` 落盘目录相同（同一段音频只会用一种 critic 评估，
+    不会冲突）；scoring.json 内嵌 extracted_attributes / expected_attributes /
+    attribute_consistency 三段（通过 ``dataclasses.asdict`` 自动展开）。
+
+    Args:
+        audio_path: 被评估的音频文件路径。必须存在。
+        result: ``AttributeAwareQwen3OmniCritic.evaluate()`` 的返回值。
+        repair_result: 可选的 ``TTSRepairAgent.repair()`` 返回值（注意：repair
+            接收的是 ``CriticResult``，调用方需先 ``result.to_critic_result()``
+            转换后再传给 repair，再把 repair 返回值传到这里）。None 表示未触发修复。
+        output_root: 输出根目录；None 时默认项目根的 output/。
+
+    Returns:
+        实际写入的文件夹路径（<output_root>/critic/<audio_stem>/）。
+
+    写入文件:
+        - scoring.json  ← AttributeAwareCriticResult 序列化（含三段属性数据）
+        - repair.json   ← ModelSpecificTTSInstruction 序列化（仅当 repair_result 非 None）
+        - <audio_filename>  ← 输入音频的副本
+
+    同名音频重评时覆盖既有文件（不版本化）。
+    """
+    audio_path = Path(audio_path)
+    if not audio_path.is_file():
+        raise FileNotFoundError(f"audio file not found: {audio_path}")
+
+    root = Path(output_root) if output_root is not None else _default_output_root()
+    folder = root / "critic" / audio_path.stem
+    folder.mkdir(parents=True, exist_ok=True)
+
+    save_json_file(dataclasses.asdict(result), folder / "scoring.json")
+
+    if repair_result is not None:
+        save_json_file(dataclasses.asdict(repair_result), folder / "repair.json")
+
     shutil.copy2(audio_path, folder / audio_path.name)
 
     return folder

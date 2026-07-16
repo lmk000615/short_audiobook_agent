@@ -56,13 +56,18 @@
 | `__init__.py` | 包导出 |
 | `qwen3omni_critic.py` | `Qwen3OmniCritic` 主类，HTTP 调 Qwen3-Omni 评分 + neutral fallback |
 | `tts_repair.py` | `TTSRepairAgent` 主类，LLM 改写 TTS 指令 + frozen 字段保护 |
-| `persistence.py` | `save_critic_session()` helper：把评分+修复+音频归档到 `output/critic/<audio_stem>/` |
+| `persistence.py` | `save_critic_session()` / `save_attribute_critic_session()` / `save_long_audio_critic_session()` helper |
 | `prompts/__init__.py` | prompt 子包 |
 | `prompts/critic_prompt.py` | Critic 的 prompt 模板（5 维评分要求 + JSON 输出格式）|
 | `prompts/repair_prompt.py` | Repair 的 prompt 模板（评分反馈 → 改写指令）|
+| `prompts/attribute_critic_prompt.py` | 属性感知 Critic 的 prompt 模板（两步法 + DirectorInstruction 锚点）|
+| `attribute_result.py` | `AttributeAwareCriticResult` dataclass（5 维 + extracted/expected/consistency）|
+| `attribute_critic.py` | `AttributeAwareQwen3OmniCritic` 主类（与 `Qwen3OmniCritic` 并存的属性感知版本）|
 | `tests/test_qwen3omni_critic.py` | Critic 测试（构造 / 解析 / 兜底 / merge / 契约 / integration skip）|
 | `tests/test_tts_repair.py` | Repair 测试（行为 / frozen 字段 / LLM raise fallback / integration skip）|
 | `tests/test_persistence.py` | 持久化测试（scoring-only / scoring+repair / 音频复制 / 命名 / 覆盖）|
+| `tests/test_attribute_critic.py` | 属性感知 Critic 测试（14 mock + 2 integration skip）|
+| `tests/INTEGRATION_HANDOFF.md` | 属性感知 Critic 的 integration 测试交接文档（给有模型权限的机器）|
 | `tests/conftest.py` | pytest fixtures（mock LLM / mock 音频路径 / schema 校验）|
 | `KNOWN_ISSUES.md` | 已知 gap + 服务激活指引 + API 端点风险 |
 | `README.md` | 本文件 |
@@ -73,12 +78,21 @@
 
 | 测试 | 数量 | 状态 |
 |---|---|---|
-| mock（构造 / 解析 / 兜底 / merge / 契约）| 15 | ✅ 全绿 |
-| integration（4 critic + 1 repair）| 5 | ⏸️ skip（待服务可访问）|
+| `test_qwen3omni_critic.py` mock | 11 | ✅ 全绿 |
+| `test_qwen3omni_critic.py` integration | 4 | ⏸️ skip（待服务可访问）|
+| `test_tts_repair.py` mock | 8 | ✅ 全绿 |
+| `test_tts_repair.py` integration | 1 | ⏸️ skip |
+| `test_persistence.py` mock | 11 | ✅ 全绿 |
+| `test_long_audio_critic.py` mock | 9 | ✅ 全绿 |
+| `test_long_audio_critic.py` integration | 1 | ⏸️ skip |
+| `test_attribute_critic.py` mock | 14 | ✅ 全绿 |
+| `test_attribute_critic.py` integration | 2 | ⏸️ skip（`RUN_INTEGRATION=1` 激活）|
 
 **为什么 integration skip**：实习生本机无法访问 Qwen3-Omni 服务（`10.50.121.102:8011`）和本地 LLM 服务。运维确认服务存在且正常，只是本机访问不到。代码就绪，等环境就绪后激活是机械步骤。
 
-**激活方法**：见 [`KNOWN_ISSUES.md §1`](./KNOWN_ISSUES.md)。
+**激活方法**：
+- 原 Qwen3OmniCritic integration：见 [`KNOWN_ISSUES.md §1`](./KNOWN_ISSUES.md)
+- AttributeAwareQwen3OmniCritic integration：见 [`tests/INTEGRATION_HANDOFF.md`](./tests/INTEGRATION_HANDOFF.md)
 
 ---
 
@@ -170,6 +184,62 @@ folder = save_critic_session(
 - 同名音频重评**覆盖**既有文件（不版本化）；attempt 字段记录在 JSON 内
 - 默认输出根 = 项目根 `output/`，可通过 `output_root=` 覆盖（如未来接入 pipeline 时改用 profile 的 `output.root`）
 - `audio_path` 不存在会抛 `FileNotFoundError`
+
+### 4.5 属性感知 Critic（并存方案）
+
+`AttributeAwareQwen3OmniCritic` 是 `Qwen3OmniCritic` 的**并存方案**（原 critic 不动）。
+差异在于评估流程是两步法：
+
+1. **属性提取**：critic 听音频后客观描述实际表现（emotion / intensity / pace /
+   volume / pitch + 必填 evidence）
+2. **文本一致性对比**：拿上游 `DirectorInstruction` 作为真相源锚点，逐项判断
+   音频与文本情感基调是否一致，输出 `overall_verdict` (high/medium/low)
+3. **不一致 → 输出修改建议**
+
+并保留原 5 维评分（向后兼容 `TTSRepairAgent`）。
+
+```python
+from src_next.critic.attribute_critic import AttributeAwareQwen3OmniCritic
+from src_next.critic.attribute_result import AttributeAwareCriticResult
+from src_next.core.data_models import DirectorInstruction
+
+critic = AttributeAwareQwen3OmniCritic(
+    base_url="http://10.50.121.102:8011",
+    timeout=200,
+)
+
+result: AttributeAwareCriticResult = critic.evaluate(
+    audio_path="/path/to/seg.wav",
+    segment=seg,
+    tts_instruction=inst,
+    director_instruction=di,   # 新增必填参数
+)
+
+# 5 维（与 CriticResult 同语义）
+print(result.overall, result.emotion_alignment)
+
+# 属性感知新增字段
+print(result.extracted_attributes)      # {"emotion": "sad", "intensity": 0.6, "evidence": "..."}
+print(result.expected_attributes)       # 从 DirectorInstruction 现场渲染（真相源）
+print(result.attribute_consistency)     # {"overall_verdict": "medium", ...}
+
+# 降级为 CriticResult，喂给 TTSRepairAgent
+if result.needs_repair(threshold=0.7, overall_floor=0.75):
+    new_inst = repair_agent.repair(
+        original=inst, segment=seg, critic=result.to_critic_result(),
+    )
+```
+
+**真相源约定（重要）**：`expected_attributes` 永远从 `DirectorInstruction` 现场
+渲染，**不取 LLM 回填值**。LLM 在 prompt 里被要求复述期望属性仅用于自检。这避免
+LLM 抄错期望值导致一致性结论失真。
+
+**落盘**：用 `save_attribute_critic_session()`，与 `save_critic_session` 落盘目录
+相同（同一段音频只会用一种 critic 评估，不会冲突）。`scoring.json` 内嵌
+`extracted_attributes` / `expected_attributes` / `attribute_consistency` 三段。
+
+**Integration 测试交接**：见 [`tests/INTEGRATION_HANDOFF.md`](./tests/INTEGRATION_HANDOFF.md)。
+本机无模型权限时 integration 测试默认 skip，需要黄区网络 + `RUN_INTEGRATION=1` 激活。
 
 ---
 
