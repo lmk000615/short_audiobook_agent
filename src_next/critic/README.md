@@ -60,6 +60,10 @@
 | `prompts/__init__.py` | prompt 子包 |
 | `prompts/critic_prompt.py` | Critic 的 prompt 模板（5 维评分要求 + JSON 输出格式）|
 | `prompts/repair_prompt.py` | Repair 的 prompt 模板（评分反馈 → 改写指令）|
+| `voicebank_bench/__init__.py` | VoiceBank Critic 基准测试工具链子包 |
+| `voicebank_bench/prep_characters.py` | 预处理 audiobench_zh 测试集 stage 1-5，生成 characters.json |
+| `voicebank_bench/run_voicebank_bench.py` | 运行 voicebank + critic 基准测试（支持多 profile 对比）|
+| `voicebank_bench/test_qwen3omni_vb_critic.py` | Qwen3-Omni 评分引擎最小验证脚本 |
 | `tests/test_qwen3omni_critic.py` | Critic 测试（构造 / 解析 / 兜底 / merge / 契约 / integration skip）|
 | `tests/test_tts_repair.py` | Repair 测试（行为 / frozen 字段 / LLM raise fallback / integration skip）|
 | `tests/test_persistence.py` | 持久化测试（scoring-only / scoring+repair / 音频复制 / 命名 / 覆盖）|
@@ -193,7 +197,57 @@ folder = save_critic_session(
 
 ---
 
-## 7. 相关文档
+## 7. voicebank_bench 子包
+
+VoiceBank Critic 基准测试工具链，用于评估 voicebank 生成音色与角色设定的匹配质量。
+
+### 7.1 工具链流程
+
+```
+prep_characters → run_voicebank_bench → test_qwen3omni_vb_critic
+     (stage 1-5)       (voicebank+critic)      (最小验证)
+```
+
+### 7.2 调用方式
+
+```bash
+# Step 1: 预处理（生成 characters.json）
+python -m src_next.critic.voicebank_bench.prep_characters \
+    --profile src_next/profiles/yellow_voxcpm2_cosyvoicehttp.yaml \
+    [--skip-existing] [--cases basic_children_01,basic_children_02]
+
+# Step 2: 运行基准测试（voicebank + critic）
+python -m src_next.critic.voicebank_bench.run_voicebank_bench \
+    --profile src_next/profiles/yellow_voxcpm2_cosyvoicehttp.yaml
+
+# Step 3: 最小验证（Qwen3-Omni 能否听音频并评分）
+python -m src_next.critic.voicebank_bench.test_qwen3omni_vb_critic \
+    --wav path/to/narrator.wav
+```
+
+### 7.3 产物目录
+
+产物统一存放在 `tests/audiobench_zh/` 下（与测试集同目录，由 `.gitignore` 排除）：
+
+```
+tests/audiobench_zh/
+├── _prep_characters/          # prep_characters 产物
+│   ├── basic_children_01/
+│   │   └── characters.json
+│   └── ...
+└── _voicebank_results/        # run_voicebank_bench 产物
+    ├── voxcpm2_cosyvoice/     # 按 profile label 分目录
+    │   ├── basic_children_01/
+    │   │   ├── voicebank_result.json
+    │   │   ├── voicebank_critic_result.json
+    │   │   └── bench_summary.json
+    │   └── ...
+    └── _bench_report.json     # 全量汇总
+```
+
+---
+
+## 8. 相关文档
 
 - [任务卡 / 设计 spec](../../docs/intern_b_critic_and_tta.md)
 - [Plan（含 16 个 task 拆解）](../../docs/superpowers/plans/2026-07-01-intern-b-critic-repair.md)
@@ -201,4 +255,3 @@ folder = save_critic_session(
 - [Audio-Oscar 设计借鉴](../../docs/intern_b_audio_oscar_why.md)
 - [已知风险与待办](./KNOWN_ISSUES.md)
 - [Mock 测试样例](../../docs/pr_samples/critic_sample.md)
-

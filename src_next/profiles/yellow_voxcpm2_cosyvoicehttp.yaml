@@ -86,6 +86,11 @@ pipeline:
   save_intermediate_json: true
   reuse_existing: false
   stop_on_tts_error: false
+  voicebank_critic:
+    enabled: true
+    max_retries: 2
+    score_threshold: 0.6
+    gender_threshold: 0.7
 
 notes:
   - "黄区所有模型走内网 HTTP，不走 subprocess / WSL / 本地 venv。"

@@ -55,7 +55,7 @@ short_audiobook_agent/
 | LLM 适配层 | `llm/` | 统一 `BaseLLMClient`；多后端切换 | 故事业务 |
 | 音色层 | `voicebank/` | 统一 `BaseVoicebankAdapter`；生成角色参考 wav | 正文合成 |
 | 合成层 | `tts/` | 统一 `BaseTTSAdapter`；按指令合成每段 wav | 故事分析逻辑 |
-| 评估层 | `critic/` | `Qwen3OmniCritic`（5 维音频评分）+ `TTSRepairAgent`（LLM 改写 TTS 指令）。**当前未接入 pipeline，standalone** | TTS 是什么、部署在哪 |
+| 评估层 | `critic/` | `Qwen3OmniCritic`（5 维音频评分）+ `TTSRepairAgent`（LLM 改写 TTS 指令）+ `voicebank_bench/`（基准测试工具链）。**当前未接入 pipeline，standalone** | TTS 是什么、部署在哪 |
 | 配置层 | `profiles/` | 一个 yaml = 一套完整 llm+voicebank+tts+output+pipeline 组合 | 业务逻辑 |
 | 工具层 | `utils/` | yaml / 文件 / 时间通用工具 | 当前 pipeline |
 
